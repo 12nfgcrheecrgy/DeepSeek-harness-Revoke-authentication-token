@@ -586,7 +586,12 @@ async function writeTrustedHosts(deps, values) {
   }
   const normalized = values.map(normalizeAuthority).filter((value) => value !== undefined)
   try {
-    await editor.edit(entry, (raw, inherited) => ({ ...inherited, trustedHosts: normalized }))
+    // `current` is this row's existing override, `inherited` the layer beneath it.
+    // Basing the new config on `inherited` — as this did at first — silently threw
+    // away every value already saved on this row: saving the trusted hosts reset the
+    // access mode to its default, which reads as the page switching itself back to
+    // "this machine only".
+    await editor.edit(entry, (current, inherited) => ({ ...inherited, ...current, trustedHosts: normalized }))
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (/cannot be nested/i.test(message)) {
@@ -773,6 +778,24 @@ function lanAddresses() {
 }
 
 /**
+ * Wait for the reload a config write triggers to re-provide the web server.
+ *
+ * The write reloads the edited row, and during that window `deps.webServer` is
+ * briefly absent; {@link readLanState} would then fall back to the loopback literal
+ * and the page would report "this machine only" right after a save that changed
+ * nothing of the sort.
+ * @param deps - live service handles.
+ */
+async function settleAfterWrite(deps) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (deps.webServer !== undefined) return
+    await new Promise((resolve) => {
+      setTimeout(resolve, 100)
+    })
+  }
+}
+
+/**
  * Compose the state the settings page renders.
  * @param deps - live service handles (`webServer`, `webRuntime`, `connection`, `configEditor`).
  * @param mode - the mode currently in force.
@@ -846,7 +869,18 @@ async function setLan(deps, enabled, mode) {
     throw new LanError('unavailable', `no addressable profile row named "${WEBSERVER_ENTRY}"`)
   }
   try {
-    await editor.edit(entry, (raw, inherited) => (enabled ? { ...inherited, host: BIND_ALL } : { ...inherited }))
+    // `current` is the row's existing override; `inherited` is the layer beneath it.
+    // Deriving the new config from `inherited` alone would drop every other override
+    // the operator saved on this row (a custom port, a compression setting), so the
+    // existing override is spread back in and only `host` is touched. Disabling
+    // removes the host override rather than pinning the literal, which leaves the
+    // schema default in charge again.
+    await editor.edit(entry, (current, inherited) => {
+      const next = { ...inherited, ...current }
+      if (enabled) return { ...next, host: BIND_ALL }
+      delete next.host
+      return next
+    })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     // A profile patch edited by hand while the process runs can leave an HMR
@@ -918,6 +952,7 @@ async function handleLanRequest(request, deps, currentMode, currentTrusted) {
   if (Array.isArray(body?.trustedHosts)) {
     try {
       await writeTrustedHosts(deps, body.trustedHosts)
+      await settleAfterWrite(deps)
       return json(200, { ok: true, state: await state() })
     } catch (error) {
       return failure(error)

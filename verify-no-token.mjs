@@ -278,14 +278,18 @@ assert.equal(new (await import('@deepseek-ai/schemastery')).default(Config.toJSO
       assert.equal(entry.usable, true)
     }
 
-    // Disable: the inherited config goes back unchanged, which makes
-    // configEditor.edit drop this row's profile override entirely.
+    // Disable: only the host override is dropped, so the schema default takes over
+    // again. Everything else the operator had saved on this row survives — writing
+    // the inherited layer back instead would have discarded it.
     onWrite = () => {
       webServer.host = '127.0.0.1'
     }
     const disable = await call('POST', { enabled: false })
     assert.equal(disable.status, 200)
-    assert.deepEqual(writes[1], inherited, 'the override is removed by writing the inherited layer back')
+    const expectedOff = { ...inherited }
+    delete expectedOff.host
+    assert.deepEqual(writes[1], expectedOff, 'the host override is dropped, the rest of the row survives')
+    assert.equal('host' in writes[1], false, 'and no literal is pinned in its place')
     assert.equal(disable.body.state.enabled, false)
 
     // Failure paths are reported verbatim, never swallowed.
@@ -665,7 +669,10 @@ assert.equal(new (await import('@deepseek-ai/schemastery')).default(Config.toJSO
       configEditor: {
         entries: () => [{ options: { id: 'no-token' } }],
         edit: async (entry, mutate) => {
-          writes.push(mutate({ mode: 'loopback' }, { mode: 'loopback' }))
+          // `current` is what the operator already saved on this row; the write must
+          // keep it. Deriving the config from the inherited layer alone is what once
+          // reset the access mode as a side effect of saving a trusted host.
+          writes.push(mutate({ mode: 'all' }, { mode: 'loopback', trustedHosts: [] }))
         },
       },
     })
@@ -676,7 +683,7 @@ assert.equal(new (await import('@deepseek-ai/schemastery')).default(Config.toJSO
     const body = await response.json()
     assert.equal(body.ok, true)
     assert.deepEqual(writes[0].trustedHosts, ['abc.example', 'x.test'], 'entries are normalized, blank ones dropped')
-    assert.equal(writes[0].mode, 'loopback', 'and the rest of the row is preserved')
+    assert.equal(writes[0].mode, 'all', 'and the access mode the operator already saved survives the write')
   }
 }
 
