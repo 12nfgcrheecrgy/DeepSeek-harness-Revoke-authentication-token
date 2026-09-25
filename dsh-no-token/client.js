@@ -63,6 +63,15 @@ window.__ModuleLoader__.load({
         loading: '正在读取配置…',
         unavailable: '该插件当前未加载，暂时无法配置。',
         lanNav: '局域网访问',
+        lanModeTitle: '访问模式',
+        lanModeUnavailable: '主机端还没提供这一行的配置表单：重启一次 dsh web 后刷新本页。',
+        lanSwitchTitle: '局域网开关',
+        lanTrustedTitle: '额外可信主机',
+        lanTrustedNone: '未添加',
+        lanTrustedHint: '用 ngrok、Cloudflare 隧道、反向代理或自定义域名访问时，把域名填在这里（每行一个，如 xxx.ngrok-free.app）。否则防护围栏会拒绝所有 /api 请求与事件通道 —— 页面能打开，但会一直显示「重新连接中」。带端口的条目只匹配该端口，不带的匹配任意端口；跨站与来源不符的请求仍会被拒绝。',
+        lanTrustedPlaceholder: 'xxx.ngrok-free.app\n192.168.1.10:3080',
+        lanTrustedSave: '保存并生效',
+        lanTrustedSaved: '已保存，隧道域名现在被信任（该行会重新加载一次，页面短暂断开）。',
         lanTitle: '局域网访问',
         lanIntro: '让同一 Wi-Fi 下的手机或另一台电脑也能打开这个界面。',
         lanStateOn: '已开启',
@@ -127,6 +136,15 @@ window.__ModuleLoader__.load({
         loading: 'Loading configuration…',
         unavailable: 'This plugin is not loaded, so it cannot be configured right now.',
         lanNav: 'LAN access',
+        lanModeTitle: 'Access mode',
+        lanModeUnavailable: 'The host half does not serve this row’s configuration form yet: restart dsh web, then reload this page.',
+        lanSwitchTitle: 'LAN switch',
+        lanTrustedTitle: 'Extra trusted hosts',
+        lanTrustedNone: 'none',
+        lanTrustedHint: 'Reaching this server through ngrok, a Cloudflare tunnel, a reverse proxy or a custom DNS name? Put the hostname here, one per line (for example xxx.ngrok-free.app). Otherwise the trust fence refuses every /api request and the event stream: the page loads but sits on “reconnecting” forever. An entry with a port matches that port only, one without matches any port, and cross-site or mismatched-origin requests are still refused.',
+        lanTrustedPlaceholder: 'xxx.ngrok-free.app\n192.168.1.10:3080',
+        lanTrustedSave: 'Save and apply',
+        lanTrustedSaved: 'Saved: the tunnel hostname is trusted now (this row reloads once, so the page briefly disconnects).',
         lanTitle: 'LAN access',
         lanIntro: 'Let a phone or another computer on the same Wi-Fi open this UI.',
         lanStateOn: 'on',
@@ -216,6 +234,17 @@ window.__ModuleLoader__.load({
         background: 'var(--dsw-alias-bg-layer-3)',
         color: 'var(--dsw-alias-label-primary)',
         fontSize: '14px',
+      },
+      textArea: {
+        width: '100%',
+        boxSizing: 'border-box',
+        padding: '8px 10px',
+        borderRadius: '8px',
+        border: '1px solid var(--dsw-alias-border-l2)',
+        background: 'var(--dsw-alias-bg-layer-3)',
+        color: 'var(--dsw-alias-label-primary)',
+        font: '13px/1.6 ui-monospace,SFMono-Regular,monospace',
+        resize: 'vertical',
       },
       optionHint: { fontSize: '12px', lineHeight: '17px', color: 'var(--dsw-alias-label-tertiary)' },
       footer: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' },
@@ -803,6 +832,18 @@ window.__ModuleLoader__.load({
             publish({ status: 'error', state: undefined, error: error instanceof Error ? error.message : String(error) })
           }
         },
+        async setTrustedHosts(values) {
+          if (snapshot.busy) return
+          publish({ busy: true, error: undefined })
+          try {
+            const response = await request({ method: 'POST', body: JSON.stringify({ trustedHosts: values }) })
+            const body = await response.json().catch(() => ({}))
+            if (body?.ok !== true) throw new Error(body?.error ?? `HTTP ${response.status}`)
+            publish({ busy: false, status: 'ready', state: body.state, error: undefined, notice: 'trusted' })
+          } catch (error) {
+            publish({ busy: false, error: error instanceof Error ? error.message : String(error) })
+          }
+        },
         async setPassword(value) {
           if (snapshot.busy) return
           publish({ busy: true, error: undefined })
@@ -856,11 +897,13 @@ window.__ModuleLoader__.load({
      */
     function LanSection(props) {
       const store = props.store ?? shared.lan
+      const controller = props.controller
       const t = props.t ?? shared.t
       const snapshot = useSnapshot(store)
       const [accepted, setAccepted] = React.useState(false)
       const [copied, setCopied] = React.useState(undefined)
       const [draft, setDraft] = React.useState('')
+      const [trust, setTrust] = React.useState('')
 
       if (store === undefined) return null
 
@@ -869,6 +912,13 @@ window.__ModuleLoader__.load({
       const risky = state?.mode === 'all'
       const blocked = risky && !enabled && !accepted
       const busy = snapshot.busy === true
+      const trusted = state?.trustedHosts ?? []
+
+      // The field follows the server's list until the operator types in it.
+      const trustKey = trusted.join('\n')
+      React.useEffect(() => {
+        setTrust(trustKey)
+      }, [trustKey])
 
       const copy = async (value, key) => {
         try {
@@ -891,13 +941,63 @@ window.__ModuleLoader__.load({
             ? t('lanOffNote')
             : snapshot.notice === 'password'
               ? t('lanPasswordSaved')
-              : undefined
+              : snapshot.notice === 'trusted'
+                ? t('lanTrustedSaved')
+                : undefined
 
       return h(
         'div',
         { style: styles.section },
         h('h2', { style: styles.sectionTitle }, t('lanTitle')),
         h('p', { style: styles.hint }, t('lanIntro')),
+        // Every control lives on this one page: the mode used to be reachable from
+        // three other seats (the sidebar Plugins page, a Settings → Built-in plugins
+        // tab, and the bundle card), which made one switch look like several.
+        h('h3', { style: styles.sectionTitle }, t('lanModeTitle')),
+        controller === undefined ? h('p', { style: styles.hint }, t('lanModeUnavailable')) : h(NoTokenCard, { controller, t }),
+        // A tunnel or reverse proxy presents a hostname the shipped fence refuses:
+        // the page loads, then every /api request and the event stream are 403, so
+        // the UI sits on "reconnecting" forever. Listing the name here is the
+        // plugin's version of the CLI's `--trusted-host`.
+        h(
+          'div',
+          { style: styles.card },
+          h(
+            'div',
+            { style: styles.cardHead },
+            h('strong', { style: styles.statusValue }, t('lanTrustedTitle')),
+            h('span', { style: styles.badgeWarn }, ` · ${trusted.length === 0 ? t('lanTrustedNone') : trusted.join(', ')}`),
+          ),
+          h('p', { style: styles.hint }, t('lanTrustedHint')),
+          h('textarea', {
+            value: trust,
+            rows: 3,
+            spellCheck: false,
+            disabled: busy,
+            placeholder: t('lanTrustedPlaceholder'),
+            style: styles.textArea,
+            onChange: (event) => {
+              setTrust(event.target.value)
+            },
+          }),
+          h(
+            'div',
+            { style: styles.footer },
+            h(
+              'button',
+              {
+                type: 'button',
+                disabled: busy,
+                style: styles.save(busy),
+                onClick: () => {
+                  store.setTrustedHosts(trust.split('\n'))
+                },
+              },
+              t('lanTrustedSave'),
+            ),
+          ),
+        ),
+        h('h3', { style: styles.sectionTitle }, t('lanSwitchTitle')),
         enabled ? h('p', { style: styles.hint }, t('lanFirstVisit')) : null,
         h(
           'div',
@@ -1420,7 +1520,7 @@ window.__ModuleLoader__.load({
         order: 25,
         label: () => t('lanNav'),
         locale: NS,
-        inject: () => ({ store }),
+        inject: () => ({ store, controller: shared.controller }),
       }, LanSection)), 'dsh-no-token: LAN section')
 
       // The Host injects the same stylesheet into the document head, where it
@@ -1459,55 +1559,20 @@ window.__ModuleLoader__.load({
         }
       }, 'dsh-no-token: reload watcher')
 
-      // Registered only while the Host serves this row's form, so a profile
-      // without the row (or with it disabled) shows no trace of the page.
+      // One place only: Settings → LAN access. The sidebar Plugins page, the
+      // Settings → Built-in plugins tab and the bundle card all rendered this same
+      // form before, which meant three copies of one switch; the row's controller is
+      // still resolved here, because that is what the section's mode block drives.
       ctx.effect(() => ctx.configForms.whileServed(ENTRIES, (served) => {
         const entry = ENTRIES.find((candidate) => served.has(candidate))
         if (entry === undefined) return () => {}
         const controller = ctx.configForms.get(entry)
         shared.controller = controller
-        const inject = () => ({ controller })
-
-        // Seat 1: the row a bundle declares, in the sidebar Plugins page. Its
-        // presence is what gives the row a configure control, and its
-        // `view: 'summary'` render is the row's one-liner.
-        const rowPage = ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
-          name: 'plugins.row.config',
-          key: ROW_KEY,
-          locale: NS,
-          inject,
-        }, NoTokenCard))
-
-        // Seat 2: a tab inside Settings → Built-in plugins, which is where a
-        // user looks for a plugin's configuration. The seat is additive by
-        // design ("a fresh id is added beside the shipped entries"), and the
-        // section renders this entry's `label` as the tab text.
-        const settingsTab = ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
-          name: 'settings.plugins.tab',
-          id: 'no-token',
-          order: 20,
-          label: () => t('title'),
-          locale: NS,
-          inject,
-        }, NoTokenCard))
-
-        // Seat 3: the bundle's own configuration on its card page, between the
-        // description and the rows — opening the card is then enough.
-        const bundleConfig = ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
-          name: 'plugins.bundle.config',
-          key: 'dsh-no-token',
-          locale: NS,
-          inject,
-        }, NoTokenCard))
-
         return () => {
-          rowPage?.()
-          settingsTab?.()
-          bundleConfig?.()
           controller.dispose()
           shared.controller = undefined
         }
-      }), 'dsh-no-token: configuration page')
+      }), 'dsh-no-token: configuration controller')
     }
 
     return {

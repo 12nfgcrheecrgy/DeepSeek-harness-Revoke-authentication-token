@@ -38,18 +38,18 @@ without a reload.
 
 ## Configure it from the Web UI
 
-The mode page registers into three seats, one per plausible place to look:
+Everything lives on **one page: Settings → LAN access** (`settings.section`, id
+`no-token-lan`). It holds the access mode, the extra trusted hosts, the LAN
+switch, the access password, and the addresses with their QR codes.
 
-| where | seat | what it gives |
-|---|---|---|
-| **Settings → Built-in plugins → the "No-token access" tab** | `settings.plugins.tab` | the form as a tab in the settings panel, labelled from this bundle's locale |
-| **Sidebar Plugins page → `dsh-no-token` → row `no-token` → configure** | `plugins.row.config`, key `dsh-no-token#no-token` | the row gains a configure control; its one-liner comes from the page's `view: 'summary'` render |
-| **Sidebar Plugins page → `dsh-no-token` card** | `plugins.bundle.config`, key `dsh-no-token` | the form sits on the bundle's own page, between its description and its rows |
-
-The second seat is the one the slot catalog reserves for "the configuration of a
-row a bundle declares" (`<package name>#<row id>`, with the row id as the
-patch declares it); the others are the additive tab and bundle seats. None is
-`plugins.item`, which belongs to the shipped official settings pages.
+Earlier versions also rendered the mode form into `settings.plugins.tab`,
+`plugins.row.config` and `plugins.bundle.config`, because each is a plausible
+place to look for a plugin's configuration. That was a mistake in practice: the
+same switch appeared in three extra places, so changing it in one and looking in
+another read as "the setting did not stick". The seats are gone; the row's
+controller is still resolved (that is what the mode block drives), and the
+browser half now claims exactly two seats — this section and the frame-wide
+`shell.overlay` layer used by the stylesheet and the readout.
 
 Values come from the shared `configForms` service of
 `@deepseek-ai/dsh-client-ui-settings`, so the page inherits revision fencing,
@@ -63,6 +63,29 @@ the row disabled shows no trace of it. `DSH_NO_TOKEN_MODE` sets the default at
 boot when it names a mode; a save from the page writes a profile-layer override
 for the entry, and that override — not the environment — is then the value in
 force. Reset returns to the bundle default, environment expression included.
+
+### Tunnels, reverse proxies, and the "reconnecting" loop
+
+The trust fence accepts a request only when its `Host` is loopback or one of the
+authorities the deployment serves — and those derived authorities are **IP
+literals**, deliberately: DNS rebinding needs an attacker-controlled name, while
+an IP-literal Host is safe on any port.
+
+A tunnel (ngrok, a Cloudflare tunnel, a reverse proxy, a private DNS name) is a
+hostname. Serve through one and the fence answers **403 to every `/api` request**,
+which leaves the page itself loading normally while the API bridge and the event
+stream are dead: the UI sits on "reconnecting" forever. The shipped answer is the
+CLI's `--trusted-host`, which a plugin cannot add to someone's launch line.
+
+So **Extra trusted hosts** on the LAN page is this plugin's version of it: one
+authority per line, written durably into this row's profile config, and honoured
+by the gate patch. Matching mirrors `isTrustedAuthority` — an entry with a port
+matches that exact authority, one without matches the hostname on any port.
+
+Listing a name does **not** disable the anti-rebinding defence: both browser
+markers the shipped fence checks are re-applied, so a cross-site request
+(`Sec-Fetch-Site: cross-site`) and a request whose `Origin` contradicts its `Host`
+are still refused.
 
 ## LAN access: one click, then scan
 
@@ -365,3 +388,200 @@ the Harness (see above), and `.gitignore` documents why.
 
 MIT — see [LICENSE](LICENSE).
 
+## Chinses_README
+
+---
+
+## 一、核心目标
+
+**在不关闭 Host/Origin 信任围栏的前提下，去掉 `?token=` 强制门禁**，并且所有配置都可以从 **Settings → Plugins** 完成，而不是手改 YAML。
+
+`dsh web` 原本会打印一个带 token 的 URL，任何没有携带签名 cookie 的请求都会被拒绝。这个 bundle 把认证层移除，让 `http://127.0.0.1:3080/` 直接打开。
+
+---
+
+## 二、它改了什么
+
+门禁逻辑位于 `@deepseek-ai/dsh-client-connection`。插件在 service 实例上包裹了三个决策点：
+
+| 决策点 | 上游行为 | 插件行为 |
+|---|---|---|
+| `requestRejection(req)`（`/api`、WebSocket mux、上传） | 无 cookie → `401`；Host/Origin 围栏拒绝 → `403` | bypassed scope 上 `401` → 放行；`403` 和「已放行」原样透传 |
+| `authorizeIndex(req, res)`（`index.html`） | `401`，或 `?token=` 有效时 `303` 换 cookie | bypassed scope 上直接返回 index |
+| `authenticatedUrl(url)` | 追加 `?token=…` | bypassed scope 上剥离 token，打印/打开的 URL 不含 secret |
+
+**其他一律不动**：不禁用任何 shipped row，不替换其他插件。**Host/Origin 围栏保持开启**，DNS rebinding 或跨站请求仍会被 `403` 拒绝——因为 harness 能跑 shell 命令，这道围栏是防止随机网页闯入的关键。
+
+---
+
+## 三、三种模式
+
+`mode` 是 volatile Config 字段，编辑后无需 reload 即可生效。
+
+| 模式 | 效果 |
+|---|---|
+| `loopback`（默认） | 只有 Host authority 是本机（`localhost`、`127.0.0.0/8`、`[::1]`）的请求跳过门禁。绑定到 LAN 地址（`--host 0.0.0.0`）时，其他机器仍需 token，打印的 LAN URL 也保留 token。 |
+| `all` | 所有通过 Host/Origin 围栏的请求都跳过门禁。仅适用于只有你能访问的端口。 |
+| `off` | 官方行为：进程 token 重新成为必需。wrapper 仍安装但变为透传，切换是实时的。 |
+
+---
+
+## 四、从 Web UI 配置
+
+模式页面注册进三个 seat：
+
+| 位置 | seat | 作用 |
+|---|---|---|
+| Settings → Built-in plugins → "No-token access" 标签页 | `settings.plugins.tab` | 设置面板中的表单标签页 |
+| Sidebar Plugins 页 → `dsh-no-token` → row `no-token` → configure | `plugins.row.config`，key `dsh-no-token#no-token` | 行级配置控件 |
+| Sidebar Plugins 页 → `dsh-no-token` 卡片 | `plugins.bundle.config`，key `dsh-no-token` | bundle 自身页面上的表单 |
+
+值来自 `@deepseek-ai/dsh-client-ui-settings` 的共享 `configForms` service，继承 revision fencing、写恢复和 live Host 更新；保存写入活动 profile 的 Cordis patch（`~/.dsh/profiles/web/cordis.patch.yml`）并立即生效。
+
+编辑 `client.js` 无需重启：模块表重组，served revision 变化，刷新页面即可拿到新字节。
+
+---
+
+## 五、LAN 访问：一键 + 扫码
+
+**Settings → LAN access** 是设置面板中独立的一级入口（`settings.section`，id `no-token-lan`，order 25）。
+
+- 一个按钮把所有接口绑定到 `webserver.host = 0.0.0.0`
+- 页面列出每个检测到的 LAN IPv4 地址、登录链接、二维码和复制按钮
+- 同一按钮可切回关闭
+- 手机在同一 Wi-Fi 下扫码即可登录 GUI
+
+**机制（为什么是合规做法）**：
+
+- shipped CLI 故意**拒绝** `--host 0.0.0.0`（`dsh-web-app/lib/startup.js` 说这会向网络暴露远程代码执行），而 web server 的 Config 只接受两种绑定：`127.0.0.1` 和 `0.0.0.0`（`dsh-host-webserver/lib/index.js`）。所以开关通过 profile config editor（`configEditor.edit`）写 **web server row 的配置**，这是 settings service 使用的同一持久化路径。
+- 这次写入会 reload 该 row，重新绑定，并且因为 `web-runtime` 注入了 `webServer`，会刷新 `resolveLanTrust`，让 LAN 地址加入 `/api` 信任围栏。页面可能断开一秒，其 poll 会挺过去。
+- **没有放松认证**。手机仍通过官方 `?token=` 交换登录（页面显示的链接**就是**带 token 的），所以 `mode: loopback` 保持安全。当 mode 为 `all` 时，按钮要求先显式确认。
+- 开关在重启后仍保留（它是 profile patch），页面始终显示当前状态和一键恢复方式。
+
+**故意不做的事**：不 patch shipped rows，不绕过 CLI guard，不加第二个 listener 或反向代理，不自动改 Windows 防火墙——页面提供需要提权的命令让用户复制。
+
+---
+
+## 六、用密码代替 token
+
+token 是一次性凭据，但扫码不一定适合手机。设置密码后，裸地址会提供一个登录表单：
+
+```
+设置 → 局域网访问 → 访问密码 → 输入 → 保存密码
+```
+
+或跳过 UI，直接给进程环境：
+
+```powershell
+$env:DSH_LAN_PASSWORD = 'your-password'; dsh web
+```
+
+- 密码存放在 harness credential store，引用名 `DSH_LAN_PASSWORD`，可来自环境、provider store 或 `.env` 文件——没有配置文件携带 secret。设置页只知道**是否**设置了密码，永远不知道值。
+- 正确密码会**重定向到 shipped token exchange**（`/?token=…`），由 Connection 自己铸造同样的 30 天 cookie；不重新实现任何 cookie 格式。
+- 表单是普通 web-server 路由（`/no-token/login`），不是 `/api` 路由——该前缀只有在认证**之后**才被允许，而这正是访客还没有的东西。
+- 失败比较是常数时间的，有延迟，每个 authority 8 次失败后锁定 10 分钟。`Host` header 在进入页面前被转义。
+- `mode: all` 仍是无认证选项；密码是中间地带。
+
+---
+
+## 七、移动端布局
+
+shipped shell 完全没有窄视口规则，其框架是 **JS 计算的 grid**。手机上展开的 sidebar 是固定 264–420px 列（390px 屏幕上约剩 113px 对话区），任何被追踪的右侧面板都会把中心压到 400px。
+
+样式表**只改 template**，并把三个 item 钉到各自轨道：
+
+- 折叠时 `grid-template-columns: 56px minmax(0, 1fr) 0`；展开时 `0 minmax(0, 1fr) 0`，sidebar 变成绝对定位的 **drawer**（`min(86vw, 320px)` + scrim）。
+- `grid-column` 钉在 `_sidebarCol` / `_centerCol` / `_rightbarCol` 上。
+- 右列保持 **zero-width track**，右侧面板覆盖对话而非挤压它。
+- 对话 gutter 降到 12px，greeting 22px，composer 增加 `padding-bottom: max(8px, env(safe-area-inset-bottom))`，控件强制 16px 防止 iOS 聚焦缩放。
+
+所有规则只落在两个顶层块之一（`verify-mobile.mjs` 强制）：
+
+| 块 | 范围 | 原因 |
+|---|---|---|
+| `@media (max-width: 820px)` | 竖屏手机 | shell 的 JS grid 在这里出问题 |
+| `@media (pointer: coarse) and (min-width: 821px) and (max-width: 1023.98px)` | 横屏手机、小平板 | shell 的 narrow mode 从 1024 开始，这个区间已是 narrow-mode；只放设备级规则，不重述 template |
+
+---
+
+## 八、Safe areas
+
+`env(safe-area-inset-*)` 在整个文档中为 **0**，直到 served viewport meta 带上 `viewport-fit=cover`。shipped 文档不带。Host 通过 **`webServer.tapIndex`** 重写该 meta：
+
+```
+width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content
+```
+
+- `viewport-fit=cover` 让 inset 规则真正生效。
+- frame 声明 `box-sizing: border-box`，`padding-top` **不带 `!important`**，让 Windows titlebar 变体保持优先。
+- 展开的 drawer 声明自己的 top/leading inset，保持 `bottom: 0` 让 scrim 覆盖手势条。
+- `interactive-widget=resizes-content` 让 Chrome/Android 为软键盘缩小布局视口。
+- meta 是编辑而非重复，转换幂等。
+
+**两条交付路径，一份样式表**：Host 通过 `webserver/index-inject` 表推入 head；浏览器半边也携带相同文本，因为 client-module 变更在下次 reload 到达手机，而 Host 变更需要重启。`verify-mobile.mjs` 断言两份副本**逐字节相同**。
+
+---
+
+## 九、安全模型
+
+- Host/Origin 信任围栏**永不触碰**。只削弱浏览器 token 门禁，且只在模式选定的 authority 上。
+- `loopback`（默认）让 LAN 访客仍需认证；密码表单只重定向到 **shipped** token exchange。
+- 密码比较基于 digest 的常数时间，失败有延迟，每个 `Host` 8 次失败锁 10 分钟（上限 64 个追踪的 authority）。
+- `all` 是唯一移除网络认证的模式，页面要求显式确认才能与 LAN 访问组合。**Harness 能跑 shell 命令：把这种组合视为把机器交给网络上的所有人。**
+
+---
+
+## 十、安装与验证
+
+**安装**：作为 profile bundle 安装（`plugin_manager` → `install_bundle`，或 `dsh plugin --profile web add <this directory>`）。profile 记录为 `link:`，所以这个工作副本**就是**已安装插件。
+
+安装改动了 `index.js`（新 exports）或新增浏览器半边，需要**重启 `dsh web` 一次**：每个进程加载一代 JavaScript 模块。
+
+**依赖**：Config schema 需要 `@deepseek-ai/schemastery`。`link:` 安装不会安装链接包自己的依赖，所以依赖及其自身依赖放在插件旁边：
+
+```
+deepseekHrnessNoToken/node_modules/@deepseek-ai/schemastery
+deepseekHrnessNoToken/node_modules/@deepseek-ai/cosmokit
+```
+
+**验证命令**：
+
+```powershell
+node verify-all.mjs        # 所有套件，一个结论（验收命令）
+node verify-manifest.mjs   # 扫描器自身的解析
+node verify-no-token.mjs   # host 决策：门禁、围栏、live Config 编辑、密码门、teardown、LAN 路由
+node verify-client.mjs     # 浏览器半边：模式页和一键 LAN 页
+node verify-mobile.mjs     # 注入的移动层：rows、viewport 重写、桌面惰性、逐字节相同副本
+node verify-qr.mjs         # 渲染的码解码回 payload，验证 RS 块
+node verify-live.mjs       # 运行中的服务器：6/6 门禁和围栏检查
+node verify-boot.mjs       # 运行进程的模块表携带浏览器半边、其 seats 和 head rows
+node verify-lan.mjs        # live：一键绑定 wildcard，围栏放行 LAN authority，链接铸造 cookie，然后绑回
+node verify-phone.mjs      # 只读：手机能用哪个地址，以及确切可用的链接
+```
+
+---
+
+## 十一、为什么不用 `dsh-shutup`
+
+`dsh-shutup` 是同一目标的第三方 bundle，但在这个 profile 中无法加载：它的 `startup.js` row 导入 `commander` 和 `@deepseek-ai/dsh-cmdline`，这些未安装，而且它禁用了 shipped `web-startup` row 来重新启用 `--host 0.0.0.0`。本插件不需要这些：它保留 shipped startup row，只触碰门禁。
+
+---
+
+## 十二、仓库布局
+
+```
+dsh-no-token/          the installable bundle
+  index.js             host half: gate patch, LAN switch, password form, injected UI
+  client.js            browser half: mode page, LAN page, mobile fallback, readout
+  cordis.patch.yml     the one row the bundle contributes
+  locale/{en,zh}.json  the card metadata
+verify-*.mjs           the suites, run from this directory
+LICENSE                MIT
+```
+
+`node_modules/` 不提交：它持有两个随 Harness 一起发布的包的副本。
+
+---
+## 许可证
+
+MIT- 见[LICENSE](LICENSE).

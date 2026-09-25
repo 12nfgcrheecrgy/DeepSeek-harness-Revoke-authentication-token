@@ -90,8 +90,7 @@ function mount(controller, served = ['no-token']) {
     slots: {
       inject: (slot, callback) => {
         assert.ok(
-          slot === 'plugins.row.config' || slot === 'settings.plugins.tab' || slot === 'plugins.bundle.config'
-          || slot === 'settings.section' || slot === 'shell.overlay',
+          slot === 'settings.section' || slot === 'shell.overlay',
           `the page only claims known seats, got ${slot}`,
         )
         return callback()
@@ -106,7 +105,7 @@ function mount(controller, served = ['no-token']) {
     effect: (execute) => execute(),
   }
   client.apply(ctx)
-  return { registrations, registered, component: registrations['plugins.row.config']?.view, requested }
+  return { registrations, registered, requested }
 }
 
 /** Depth-first walk over the stub element tree, collecting nodes and text. */
@@ -135,50 +134,62 @@ mount(makeController()) // applying the plugin is what registers its dictionarie
 const zh = dictionaries['settings.noToken']?.zh
 assert.ok(zh, 'the page registers its dictionaries')
 
-// ---- the registered page ------------------------------------------------------
+/** Localized text, resolved the way the page resolves it. */
+const t = (key) => zh[key] ?? key
+
+// ---- the registered seats ------------------------------------------------------
+/**
+ * The mode form as the LAN section embeds it. The form no longer has seats of its
+ * own — reaching it through the section's tree is also what proves the two controls
+ * now share one page.
+ * @param controller - the stub Config controller.
+ * @param served - the entry ids the Host serves.
+ * @returns the form renderer plus the mount's registrations and requested entries.
+ */
+function modeFormOf(controller, served = ['no-token']) {
+  const { registrations, requested } = mount(controller, served)
+  const registration = registrations['settings.section']
+  const props = registration.options.inject()
+  const tree = render(registration.view, { ...props, t })
+  const node = findAll(tree, (candidate) => candidate.props?.controller !== undefined)[0]
+  assert.ok(node !== undefined, 'the LAN section embeds the mode form on the same page')
+  // The stub keeps hook values in a shared array, so the form's first render starts
+  // from an empty cursor; later renders keep it, which is what lets a changed radio
+  // survive into the next render.
+  states = []
+  return { view: (extra) => node.type({ ...node.props, ...extra }), requested, registrations, sectionProps: props }
+}
+
 {
   const controller = makeController()
-  const { registrations, component, requested } = mount(controller)
+  const { registrations, requested } = mount(controller)
 
   assert.deepEqual(requested, ['no-token'], 'the served namespace is the one bound')
 
-  // Seat 1: the row a bundle declares, in the sidebar Plugins page.
-  const registration = registrations['plugins.row.config']?.options
-  assert.ok(registration !== undefined, 'the row seat is registered')
-  assert.equal(registration.name, 'plugins.row.config')
-  assert.equal(registration.key, 'dsh-no-token#no-token', 'the key is <package name>#<row id>')
-  assert.equal(registration.locale, 'settings.noToken')
+  // One page, not four: the sidebar Plugins page, the Settings → Built-in plugins
+  // tab and the bundle card are all gone, leaving only the settings section.
+  assert.equal(registrations['plugins.row.config'], undefined, 'the sidebar row seat is gone')
+  assert.equal(registrations['settings.plugins.tab'], undefined, 'the plugins-settings tab is gone')
+  assert.equal(registrations['plugins.bundle.config'], undefined, 'the bundle card seat is gone')
 
-  // Seat 2: a tab inside Settings → Built-in plugins, labelled from the locale.
-  const tab = registrations['settings.plugins.tab']?.options
-  assert.ok(tab !== undefined, 'the settings tab is registered')
-  assert.equal(tab.id, 'no-token')
-  assert.equal(tab.order, 20)
-  assert.equal(tab.locale, 'settings.noToken')
-  assert.equal(tab.label(), zh.title, 'the tab text is the localized title')
-  assert.equal(registrations['settings.plugins.tab'].view, component, 'both seats render the same page')
+  const section = registrations['settings.section']?.options
+  assert.ok(section !== undefined, 'the settings section is registered')
+  assert.equal(section.id, 'no-token-lan')
+  assert.equal(section.locale, 'settings.noToken')
+  assert.equal(section.label(), zh.lanNav, 'the section label is the localized nav text')
+  assert.equal(typeof section.inject().controller, 'object', 'the section receives the row controller the mode form drives')
 
-  // Seat 3: the bundle's own configuration, keyed by the bundle package name.
-  const bundle = registrations['plugins.bundle.config']?.options
-  assert.ok(bundle !== undefined, 'the bundle seat is registered')
-  assert.equal(bundle.key, 'dsh-no-token', 'the bundle key is the package name')
-  assert.equal(registrations['plugins.bundle.config'].view, component)
+  const { view } = modeFormOf(controller)
+  let tree = render(view, {})
 
-  // The row's one-liner, used by the Plugins page in place of a description.
-  assert.equal(render(component, { view: 'summary' }), zh.summary)
-
-  states = [] // a fresh mount
-  let tree = render(component, { view: 'page' })
-
-  const radios = findAll(tree, (node) => node.type === 'input')
+  const radios = findAll(tree, (node) => node.type === 'input').filter((input) => input.props.name === 'dsh-no-token-mode')
   assert.deepEqual(radios.map((radio) => radio.props.value), ['loopback', 'all', 'off'])
   assert.deepEqual(radios.map((radio) => radio.props.checked), [true, false, false])
   assert.ok(radios.every((radio) => radio.props.disabled === false))
-  assert.ok(radios.every((radio) => radio.props.name === 'dsh-no-token-mode'))
 
   const texts = findAll(tree, (node) => typeof node === 'string')
   for (const copy of [zh.hint, zh.loopback, zh.all, zh.off, zh.effective, zh.save]) {
-    assert.ok(texts.some((text) => text.includes(copy)), `the page renders "${copy}"`)
+    assert.ok(texts.some((text) => text.includes(copy)), `the form renders "${copy}"`)
   }
 
   let buttons = findAll(tree, (node) => node.type === 'button')
@@ -186,23 +197,23 @@ assert.ok(zh, 'the page registers its dictionaries')
   assert.equal(buttons[0].props.disabled, true, 'an unmodified form cannot be saved')
 
   // Choose a different mode: the save becomes available, one write is issued,
-  // and the page reports the outcome.
+  // and the form reports the outcome.
   radios.find((radio) => radio.props.value === 'all').props.onChange()
-  tree = render(component, { view: 'page' })
+  tree = render(view, {})
   buttons = findAll(tree, (node) => node.type === 'button')
   assert.equal(buttons[0].props.disabled, false)
   await buttons[0].props.onClick()
   assert.deepEqual(controller.writes, [['set', 'mode', 'all']])
-  tree = render(component, { view: 'page' })
+  tree = render(view, {})
   assert.ok(findAll(tree, (node) => typeof node === 'string').some((text) => text.includes(zh.saved)))
 }
 
 // ---- an overridden row offers its reset ---------------------------------------
 {
   const controller = makeController({ mode: 'all', base: 'loopback' })
-  const { component } = mount(controller)
+  const { view } = modeFormOf(controller)
   states = []
-  let tree = render(component, { view: 'page' })
+  let tree = render(view, {})
 
   assert.ok(findAll(tree, (node) => typeof node === 'string').some((text) => text.includes(zh.overridden)))
   const buttons = findAll(tree, (node) => node.type === 'button')
@@ -214,26 +225,26 @@ assert.ok(zh, 'the page registers its dictionaries')
 // ---- a nested include layer prefixes the entry id -----------------------------
 {
   const controller = makeController()
-  const { requested, component } = mount(controller, ['include:no-token'])
+  const { requested, view } = modeFormOf(controller, ['include:no-token'])
   assert.deepEqual(requested, ['include:no-token'], 'the prefixed entry id is bound when that is what the Host serves')
   states = []
-  const tree = render(component, { view: 'page' })
-  assert.equal(findAll(tree, (node) => node.type === 'input').length, 3)
+  const tree = render(view, {})
+  assert.equal(findAll(tree, (node) => node.type === 'input').filter((input) => input.props.name === 'dsh-no-token-mode').length, 3)
 }
 
 // ---- a read-only deployment, and an unloaded plugin ---------------------------
 {
   const controller = makeController({ writable: false })
-  const { component } = mount(controller)
+  const { view } = modeFormOf(controller)
   states = []
-  let tree = render(component, { view: 'page' })
+  let tree = render(view, {})
   assert.ok(findAll(tree, (node) => typeof node === 'string').some((text) => text.includes(zh.readOnly)))
   assert.equal(findAll(tree, (node) => node.type === 'button')[0].props.disabled, true)
 
   const gone = makeController({ status: 'unavailable' })
-  const { component: unavailableView } = mount(gone)
+  const { view: unavailableView } = modeFormOf(gone)
   states = []
-  tree = render(unavailableView, { view: 'page' })
+  tree = render(unavailableView, {})
   assert.ok(findAll(tree, (node) => typeof node === 'string').some((text) => text.includes(zh.unavailable)))
 }
 
@@ -400,8 +411,8 @@ assert.ok(zh, 'the page registers its dictionaries')
   const names = [...new Set(registered.map((entry) => entry.name))].sort()
   assert.deepEqual(
     names,
-    ['plugins.bundle.config', 'plugins.row.config', 'settings.plugins.tab', 'settings.section', 'shell.overlay'],
-    'the browser half claims its four seats plus the frame-wide fallback',
+    ['settings.section', 'shell.overlay'],
+    'the browser half claims exactly two seats: the settings page and the frame-wide layer',
   )
   const ids = registered.filter((entry) => entry.name === 'shell.overlay').map((entry) => entry.id)
   assert.deepEqual(ids, ['no-token-mobile', 'no-token-mobile-debug'], 'the stylesheet and the readout both sit in the frame-wide layer')

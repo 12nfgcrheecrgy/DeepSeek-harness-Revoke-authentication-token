@@ -65,6 +65,18 @@ const MODES = [LOOPBACK, ALL, OFF]
  */
 export const Config = z.object({
   mode: z.union(MODES).default(LOOPBACK).volatile(),
+  /**
+   * Non-loopback authorities this deployment serves besides the LAN literals —
+   * the same idea as the CLI's `--trusted-host`, which a plugin cannot add to
+   * someone's launch line. A tunnel (ngrok, a Cloudflare tunnel, a reverse proxy
+   * or a private DNS name) presents a hostname the shipped fence refuses with 403,
+   * which leaves the page loading but its `/api` bridge and event stream dead: the
+   * UI sits on "reconnecting" forever.
+   *
+   * One authority per line. An entry with a port matches exactly; a port-less
+   * entry matches that hostname on any port, mirroring `isTrustedAuthority`.
+   */
+  trustedHosts: z.array(z.string()).default([]),
 })
 
 /**
@@ -96,6 +108,75 @@ function readMode(config, warn) {
   if (value === LOOPBACK || value === ALL || value === OFF) return value
   if (value !== undefined) warn(`unknown mode ${JSON.stringify(value)}; using "${LOOPBACK}"`)
   return LOOPBACK
+}
+
+/**
+ * Normalize one authority for comparison: lowercase, no scheme, no trailing slash.
+ * @param value - one raw entry.
+ * @returns the comparable authority, or undefined when the entry is unusable.
+ */
+function normalizeAuthority(value) {
+  const trimmed = String(value ?? '').trim().toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/\/+$/, '')
+  return trimmed === '' ? undefined : trimmed
+}
+
+/**
+ * The extra authorities this deployment trusts, from the live Config.
+ * @param config - the plugin's resolved Config.
+ * @returns normalized authorities, in configured order.
+ */
+function readTrustedHosts(config) {
+  const raw = config?.trustedHosts
+  const value = isVolatileRef(raw) ? raw.get() : raw
+  if (!Array.isArray(value)) return []
+  return value.map(normalizeAuthority).filter((entry) => entry !== undefined)
+}
+
+/**
+ * Whether a request authority matches one configured entry.
+ *
+ * Mirrors the shipped `isTrustedAuthority`: a port-less entry matches the
+ * hostname on any port, an entry with a port matches that exact authority, and
+ * both sides compare after WHATWG normalization so case and a redundant `:80`
+ * never decide trust.
+ * @param authority - the request's `host` header.
+ * @param trusted - the configured authorities.
+ * @returns true when the authority is explicitly trusted.
+ */
+function matchesTrustedAuthority(authority, trusted) {
+  const wanted = normalizeAuthority(authority)
+  if (wanted === undefined) return false
+  const host = wanted.replace(/:\d+$/, '')
+  return trusted.some((entry) => (entry.includes(':') ? entry === wanted : entry === host))
+}
+
+/**
+ * The browser markers the shipped fence checks before it trusts a Host.
+ *
+ * Kept verbatim for explicitly trusted authorities: a listed tunnel hostname must
+ * not also disable the DNS-rebinding defence that stops a hostile page from
+ * driving this machine through the browser.
+ * @param request - the request facts the fence receives.
+ * @returns true when no browser marker contradicts the request's own authority.
+ */
+function isSameOriginRequest(request) {
+  const host = headerValue(request.headers, 'host')
+  if (host === undefined) return false
+  let authority
+  try {
+    authority = new URL(`http://${host}`)
+  } catch {
+    return false
+  }
+  const site = headerValue(request.headers, 'sec-fetch-site')
+  if (typeof site === 'string' && site.toLowerCase() === 'cross-site') return false
+  const origin = headerValue(request.headers, 'origin')
+  if (origin === undefined || origin === '') return true
+  try {
+    return new URL(origin).host === authority.host
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -197,16 +278,18 @@ function bypasses(mode, hostname) {
  * holder, so wrapper functions always read the mode in force.
  * @param connection - the live `connection` service instance.
  * @param state - the mutable holder carrying the current mode.
+ * @param config - the plugin's resolved Config, read live for the trusted-host list.
  * @returns true when this call installed the wrappers.
  */
-function patchConnection(connection, state) {
+function patchConnection(connection, state, config) {
   const existing = connection[PATCH]
   if (existing !== undefined) {
     existing.state = state
+    existing.config = config
     return false
   }
 
-  const record = { state, restore: undefined }
+  const record = { state, config, restore: undefined }
   Object.defineProperty(connection, PATCH, { value: record, enumerable: false, configurable: true })
 
   const originalRejection = connection.requestRejection
@@ -215,7 +298,22 @@ function patchConnection(connection, state) {
 
   const requestRejection = function requestRejection(request) {
     const rejection = typeof originalRejection === 'function' ? originalRejection.call(connection, request) : undefined
-    // undefined = admitted, 403 = trust fence: neither is ours to change.
+    // 403 is the trust fence. A hostname the operator listed by name earns the
+    // same trust the CLI's `--trusted-host` gives it — a tunnel hostname is not an
+    // IP literal, so the shipped fence refuses every `/api` request and the page
+    // loads into a permanent "reconnecting" with a dead event stream. The browser
+    // markers the fence checks are re-applied here, so listing a name never
+    // disables the DNS-rebinding defence.
+    if (rejection === 403) {
+      // The raw `host` header, not the parsed hostname: a configured entry may name
+      // a port, and `requestHostname` drops it.
+      const authority = headerValue(request.headers, 'host')
+      const configured = connection[PATCH].config
+      if (matchesTrustedAuthority(authority, readTrustedHosts(configured)) && isSameOriginRequest(request)) {
+        return undefined
+      }
+      return rejection
+    }
     if (rejection !== 401) return rejection
     return bypasses(connection[PATCH].state.mode, requestHostname(request)) ? undefined : rejection
   }
@@ -471,6 +569,34 @@ const MOBILE_CSS = `/* dsh-no-token/mobile */
 `
 
 /**
+ * Replace this row's trusted-host list, the same durable write the LAN switch
+ * performs on the webserver row.
+ * @param deps - live service handles.
+ * @param values - the authorities the page sent.
+ * @throws {LanError} `unavailable`, `busy`, or `write-failed`.
+ */
+async function writeTrustedHosts(deps, values) {
+  const editor = deps.configEditor
+  if (editor === undefined) {
+    throw new LanError('unavailable', 'this deployment cannot change the trust list: the profile config editor is not mounted')
+  }
+  const entry = editor.entries().find((row) => row.options.id === ROW_ID)
+  if (entry === undefined) {
+    throw new LanError('unavailable', `no addressable profile row named "${ROW_ID}"`)
+  }
+  const normalized = values.map(normalizeAuthority).filter((value) => value !== undefined)
+  try {
+    await editor.edit(entry, (raw, inherited) => ({ ...inherited, trustedHosts: normalized }))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/cannot be nested/i.test(message)) {
+      throw new LanError('busy', 'another configuration edit is still in flight (a hand-edited cordis.patch.yml can leave one open), so nothing changed: restart dsh web and try again')
+    }
+    throw new LanError('write-failed', message)
+  }
+}
+
+/**
  * The viewport keys this plugin adds to the served document.
  *
  * `viewport-fit=cover` is what makes any `env(safe-area-inset-*)` in MOBILE_CSS
@@ -587,6 +713,8 @@ const MOBILE_DEBUG_SCRIPT = `(function(){
 
 /** The profile row whose config owns the bind. */
 const WEBSERVER_ENTRY = 'webserver'
+/** This bundle's own row, whose config carries the mode and the trusted hosts. */
+const ROW_ID = 'no-token'
 /** The webserver schema's two bind literals (`z.union([z.const(…), z.const(…)])`). */
 const BIND_LOOPBACK = '127.0.0.1'
 const BIND_ALL = '0.0.0.0'
@@ -757,17 +885,25 @@ async function setLan(deps, enabled, mode) {
  * @param request - the Fetch request the connection carrier admitted.
  * @param deps - live service handles.
  * @param currentMode - reads the mode in force at call time.
+ * @param currentTrusted - reads the trusted-host list in force at call time.
  * @returns the JSON response.
  */
-async function handleLanRequest(request, deps, currentMode) {
+async function handleLanRequest(request, deps, currentMode, currentTrusted) {
   const json = (status, payload) => new Response(JSON.stringify(payload), {
     status,
     headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
   })
+  /** One control failure, with the status its code deserves. */
+  const failure = (error) => {
+    const code = error instanceof LanError ? error.code : 'write-failed'
+    const status = code === 'unavailable' ? 503 : code === 'write-failed' ? 500 : 409
+    return json(status, { ok: false, code, error: error instanceof Error ? error.message : String(error) })
+  }
   /** The state plus what the page may say about the password, never the value. */
   const state = async () => {
     const current = readLanState(deps, currentMode())
     current.password = await passwordState(deps)
+    current.trustedHosts = currentTrusted()
     return current
   }
   if (request.method === 'GET') return json(200, { ok: true, state: await state() })
@@ -776,6 +912,16 @@ async function handleLanRequest(request, deps, currentMode) {
     body = await request.json()
   } catch {
     return json(400, { ok: false, code: 'bad-request', error: 'the request body must be JSON' })
+  }
+  // A tunnel or reverse proxy presents a hostname the shipped fence refuses, which
+  // kills the API bridge and the event stream while the page itself still loads.
+  if (Array.isArray(body?.trustedHosts)) {
+    try {
+      await writeTrustedHosts(deps, body.trustedHosts)
+      return json(200, { ok: true, state: await state() })
+    } catch (error) {
+      return failure(error)
+    }
   }
   const wantsPassword = typeof body?.password === 'string' || body?.password === null
   if (wantsPassword) {
@@ -1139,10 +1285,10 @@ export function apply(ctx, config) {
       path: LAN_PATH,
       methods: ['GET', 'POST'],
       requestBody: 'buffered',
-      fetch: (request) => handleLanRequest(request, deps, () => state.mode),
+      fetch: (request) => handleLanRequest(request, deps, () => state.mode, () => readTrustedHosts(config)),
     }), 'no-token: LAN control route')
 
-    if (patchConnection(connection, state)) {
+    if (patchConnection(connection, state, config)) {
       connectionCtx.effect(() => () => {
         connection[PATCH]?.restore?.()
       }, 'no-token: connection gate patch')

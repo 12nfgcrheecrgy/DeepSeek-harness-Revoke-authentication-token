@@ -590,4 +590,94 @@ assert.equal(new (await import('@deepseek-ai/schemastery')).default(Config.toJSO
   }
 }
 
+// ---- extra trusted hosts: tunnels and reverse proxies --------------------------
+// A tunnel presents a hostname, not an IP literal, so the shipped fence answers 403
+// to every /api request and the page loads into a permanent "reconnecting". The
+// configured list is this plugin's `--trusted-host`, and the browser markers the
+// fence checks must survive it.
+{
+  /** A connection double whose fence behaves like the shipped one. */
+  const makeFenced = () => {
+    const routes = []
+    return {
+      routes,
+      fetch: {
+        register(route) {
+          routes.push(route)
+          return () => {}
+        },
+      },
+      requestRejection(request) {
+        const host = request.headers instanceof Headers ? request.headers.get('host') : request.headers.host
+        const hostname = String(host ?? '').replace(/:\d+$/, '')
+        if (hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '192.168.1.20') return 401
+        return 403
+      },
+      authorizeIndex: () => false,
+      authenticatedUrl: (baseUrl) => `${baseUrl}?token=SECRET`,
+    }
+  }
+  const headers = (extra = {}) => ({ headers: { host: 'abc.ngrok-free.app', ...extra } })
+
+  const without = makeFenced()
+  mount(without, { mode: 'loopback' })
+  assert.equal(without.requestRejection(headers()), 403, 'an unlisted tunnel hostname is still refused')
+
+  const withTrust = makeFenced()
+  mount(withTrust, { mode: 'loopback', trustedHosts: ['abc.ngrok-free.app'] })
+  assert.equal(withTrust.requestRejection(headers()), undefined, 'a listed tunnel hostname is admitted')
+  assert.equal(
+    withTrust.requestRejection(headers({ 'sec-fetch-site': 'cross-site' })),
+    403,
+    'but a cross-site request through it is still refused',
+  )
+  assert.equal(
+    withTrust.requestRejection(headers({ origin: 'https://evil.example' })),
+    403,
+    'and so is a request whose Origin contradicts its Host',
+  )
+  assert.equal(
+    withTrust.requestRejection(headers({ origin: 'https://abc.ngrok-free.app' })),
+    undefined,
+    'while the tunnel own origin passes',
+  )
+  assert.equal(
+    withTrust.requestRejection(headers({ host: 'other.ngrok-free.app' })),
+    403,
+    'a different hostname on the same provider is not covered',
+  )
+
+  // A port-qualified entry matches that port only; a bare one matches any port.
+  const ported = makeFenced()
+  mount(ported, { mode: 'loopback', trustedHosts: ['abc.example:8443', 'plain.example'] })
+  assert.equal(ported.requestRejection(headers({ host: 'abc.example:8443' })), undefined)
+  assert.equal(ported.requestRejection(headers({ host: 'abc.example:9999' })), 403, 'a listed port is exact')
+  assert.equal(ported.requestRejection(headers({ host: 'plain.example:9999' })), undefined, 'a port-less entry matches any port')
+
+  // The list is written through the same profile editor the bind uses, normalized.
+  {
+    const writes = []
+    const connection = makeFenced()
+    mount(connection, { mode: 'loopback' }, {
+      webServer: { host: '127.0.0.1', port: 3080, register: () => () => {} },
+      webRuntime: { trustedHosts: [] },
+      credentials: { describe: async () => ({ configured: false, writable: true }), resolve: async () => undefined },
+      configEditor: {
+        entries: () => [{ options: { id: 'no-token' } }],
+        edit: async (entry, mutate) => {
+          writes.push(mutate({ mode: 'loopback' }, { mode: 'loopback' }))
+        },
+      },
+    })
+    const response = await connection.routes[0].fetch(new Request('http://127.0.0.1:3080/api/no-token/lan', {
+      method: 'POST',
+      body: JSON.stringify({ trustedHosts: [' ABC.Example ', 'http://x.test/', '   '] }),
+    }))
+    const body = await response.json()
+    assert.equal(body.ok, true)
+    assert.deepEqual(writes[0].trustedHosts, ['abc.example', 'x.test'], 'entries are normalized, blank ones dropped')
+    assert.equal(writes[0].mode, 'loopback', 'and the rest of the row is preserved')
+  }
+}
+
 console.log('verify-no-token: all assertions passed')
