@@ -271,7 +271,9 @@ function modeFormOf(controller, served = ['no-token']) {
       calls.push([path, options.method])
       if (options.method === 'POST') {
         const body = JSON.parse(options.body)
-        if (body.password !== undefined) {
+        if (body.trustedHosts !== undefined) {
+          current = { ...current, trustedHosts: body.trustedHosts.filter((entry) => String(entry).trim() !== '') }
+        } else if (body.password !== undefined) {
           current = { ...current, password: { ...current.password, set: body.password !== null } }
         } else {
           current = { ...current, enabled: body.enabled, bind: body.enabled ? '0.0.0.0' : '127.0.0.1' }
@@ -398,6 +400,68 @@ function modeFormOf(controller, served = ['no-token']) {
     assert.ok(texts.some((text) => text.includes(zh.lanPasswordEnv)), 'the environment source is named')
     field = findAll(tree, (node) => node.type === 'input').find((input) => input.props.type === 'password')
     assert.equal(field, undefined, 'and the field is withheld')
+
+    // Extra trusted hosts: the tunnel case. A tunnel presents a hostname, the fence
+    // refuses it, and the page is where the operator lists it.
+    current = { ...current, trustedHosts: [] }
+    states = []
+    const trustMount = mount(makeController())
+    const trustStore = trustMount.registrations['settings.section'].options.inject().store
+    await new Promise((resolve) => {
+      realTimeout(resolve, 10)
+    })
+    states = []
+    tree = render(trustMount.registrations['settings.section'].view, { store: trustStore, t })
+    texts = findAll(tree, (node) => typeof node === 'string')
+    assert.ok(texts.some((text) => text.includes(zh.lanTrustedTitle)), 'the trusted-host card renders')
+    assert.ok(texts.some((text) => text.includes(zh.lanTrustedNone)), 'and reports an empty list')
+    const area = findAll(tree, (node) => node.type === 'textarea')[0]
+    assert.ok(area !== undefined, 'a field takes the tunnel hostname')
+    area.props.onChange({ target: { value: 'abc.ngrok-free.app\n\n' } })
+    // The click has to come from a render that saw the new draft, or its closure
+    // still holds the empty one.
+    tree = render(trustMount.registrations['settings.section'].view, { store: trustStore, t })
+    const trustSave = findAll(tree, (node) => node.type === 'button').find((button) => button.children[0] === zh.lanTrustedSave)
+    assert.ok(trustSave !== undefined, 'and has a save')
+    trustSave.props.onClick()
+    await new Promise((resolve) => {
+      realTimeout(resolve, 10)
+    })
+    states = []
+    tree = render(trustMount.registrations['settings.section'].view, { store: trustStore, t })
+    texts = findAll(tree, (node) => typeof node === 'string')
+    assert.ok(texts.some((text) => text.includes('abc.ngrok-free.app')), 'the saved hostname is shown back')
+
+    // A Host half that predates the field answers 400 while naming its own, older
+    // body. That is a restart, not a bad request, and the page has to say so — the
+    // raw 400 is what an operator reported when the older half was still running.
+    {
+      const stale = mount(makeController())
+      const staleStore = stale.registrations['settings.section'].options.inject().store
+      await new Promise((resolve) => {
+        realTimeout(resolve, 10)
+      })
+      const healthy = globalThis.fetch
+      globalThis.fetch = async () => ({
+        status: 400,
+        json: async () => ({ ok: false, code: 'bad-request', error: 'the body must be { "enabled": boolean }' }),
+      })
+      await staleStore.setTrustedHosts(['abc.ngrok-free.app'])
+      globalThis.fetch = healthy
+      assert.match(staleStore.getSnapshot().error, /重启/, 'the page points at the restart, not the raw 400')
+    }
+    const missing = mount(makeController())
+    const missingStore = missing.registrations['settings.section'].options.inject().store
+    await new Promise((resolve) => {
+      realTimeout(resolve, 10)
+    })
+    globalThis.fetch = async () => ({ status: 404, json: async () => ({}) })
+    await missingStore.setEnabled(true)
+    globalThis.fetch = async (path, options = {}) => {
+      calls.push([path, options.method])
+      return { status: 200, json: async () => ({ ok: true, state: current }) }
+    }
+    assert.match(missingStore.getSnapshot().error, /重启/, 'a route that is absent entirely says the same thing')
   } finally {
     globalThis.setTimeout = realTimeout
   }

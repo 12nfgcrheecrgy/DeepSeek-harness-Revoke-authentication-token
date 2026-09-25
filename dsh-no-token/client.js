@@ -806,6 +806,25 @@ window.__ModuleLoader__.load({
       const wait = (milliseconds) => new Promise((resolve) => {
         setTimeout(resolve, milliseconds)
       })
+      /**
+       * Text for one rejected control request.
+       *
+       * A Host half that predates a field answers 400 while naming its own, older
+       * body ("the body must be …"), and a Host half that predates the route answers
+       * 404. Neither is a mistake the operator can fix in the form, so both become
+       * the one instruction that works: restart the Host.
+       * @param response - the Fetch response.
+       * @param body - its parsed body, when it had one.
+       * @returns the text to show.
+       */
+      const controlFailure = (response, body) => {
+        const message = body?.error ?? `HTTP ${response.status}`
+        if (response.status === 404) return shared.t('lanRestartHost')
+        if (response.status === 400 || response.status === 409) {
+          if (body?.code === 'bad-request' || body?.code === 'busy') return `${shared.t('lanRestartHost')} (${message})`
+        }
+        return message
+      }
       const read = async () => {
         const response = await request({ method: 'GET' })
         if (response.status === 404) {
@@ -838,7 +857,7 @@ window.__ModuleLoader__.load({
           try {
             const response = await request({ method: 'POST', body: JSON.stringify({ trustedHosts: values }) })
             const body = await response.json().catch(() => ({}))
-            if (body?.ok !== true) throw new Error(body?.error ?? `HTTP ${response.status}`)
+            if (body?.ok !== true) throw new Error(controlFailure(response, body))
             publish({ busy: false, status: 'ready', state: body.state, error: undefined, notice: 'trusted' })
           } catch (error) {
             publish({ busy: false, error: error instanceof Error ? error.message : String(error) })
@@ -850,7 +869,7 @@ window.__ModuleLoader__.load({
           try {
             const response = await request({ method: 'POST', body: JSON.stringify({ password: value }) })
             const body = await response.json().catch(() => ({}))
-            if (body?.ok !== true) throw new Error(body?.error ?? `HTTP ${response.status}`)
+            if (body?.ok !== true) throw new Error(controlFailure(response, body))
             publish({ busy: false, status: 'ready', state: body.state, error: undefined, notice: 'password' })
           } catch (error) {
             publish({ busy: false, error: error instanceof Error ? error.message : String(error) })
@@ -863,7 +882,7 @@ window.__ModuleLoader__.load({
           try {
             const response = await request({ method: 'POST', body: JSON.stringify({ enabled }) })
             const body = await response.json().catch(() => ({}))
-            if (body?.ok !== true) failure = body?.error ?? `HTTP ${response.status}`
+            if (body?.ok !== true) failure = controlFailure(response, body)
           } catch {
             /* the rebind closes connections; the poll below decides the outcome */
           }
