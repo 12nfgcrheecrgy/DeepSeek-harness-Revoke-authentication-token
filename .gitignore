@@ -1,0 +1,12 @@
+# Installed from the harness installation, not from this repository: see
+# "Dependencies and the workspace layout" in dsh-no-token/README.md.
+node_modules/
+
+# Editor and operating-system noise.
+.DS_Store
+Thumbs.db
+*.log
+
+# Local scratch files.
+*.tmp
+*.bak

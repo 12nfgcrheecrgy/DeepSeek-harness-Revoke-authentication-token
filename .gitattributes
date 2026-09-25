@@ -1,0 +1,5 @@
+# Keep the repository at LF regardless of the platform that clones it, so a diff
+# never shows a whole file changed because an editor rewrote the line endings.
+* text=auto eol=lf
+*.png binary
+*.jpg binary

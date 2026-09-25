@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "No Token Gate",
+    "description": "Serve the Web UI without the mandatory ?token= browser gate, keeping the Host/Origin trust fence."
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "免 Token 访问",
+    "description": "关闭 Web UI 强制的 ?token= 浏览器验证，同时保留 Host/Origin 信任围栏。"
+  }
+}

@@ -1,0 +1,24 @@
+# dsh-no-token — bundle patch.
+#
+# A single host row. It wraps the live `connection` service from its own
+# `apply()`, so it disables no shipped row, replaces no other plugin, and
+# survives a Connection reload through its injection seam.
+#
+# `mode` is declared volatile in index.js's Config schema, which is what makes
+# it editable from Settings → Plugins → this bundle → row `no-token`. The page
+# that edits it is client.js, registered into the `plugins.row.config` seat for
+# the key `dsh-no-token#no-token`; an accepted edit is committed in place by the
+# Loader and takes effect without a reload.
+#
+#   loopback (default) — only local requests skip the token gate
+#   all                — every request that passes the Host/Origin fence does
+#   off                — official behaviour: the process token is mandatory
+#
+# DSH_NO_TOKEN_MODE overrides the default at boot. The expression always yields
+# a value the Config schema accepts, because an invalid enum member would make
+# the row fail to load instead of falling back.
+- insert:
+    - id: no-token
+      name: dsh-no-token
+      config:
+        mode: !!js "['loopback', 'all', 'off'].includes(process.env.DSH_NO_TOKEN_MODE) ? process.env.DSH_NO_TOKEN_MODE : 'loopback'"
