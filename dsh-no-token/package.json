@@ -1,8 +1,8 @@
 {
   "name": "dsh-no-token",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
-  "description": "Serve the DeepSeek Harness Web UI without the mandatory ?token= browser gate, keeping the Host/Origin trust fence. Configurable from Settings → Plugins.",
+  "description": "Serve the DeepSeek Harness Web UI without the mandatory ?token= browser gate, keeping the Host/Origin trust fence. One-click LAN access, password sign-in, tunnel hosts, mobile layout — all on one settings page.",
   "type": "module",
   "main": "index.js",
   "icon": "./icon.svg",

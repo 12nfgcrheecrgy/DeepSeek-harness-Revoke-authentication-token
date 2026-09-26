@@ -2,11 +2,21 @@
 
 Serve the DeepSeek Harness Web UI **without the mandatory `?token=` browser
 gate**, while keeping Connection's Host/Origin trust fence switched on — and
-configure it from **Settings → Plugins** instead of editing YAML.
+configure everything from **Settings → LAN access** instead of editing YAML.
 
 `dsh web` prints a tokenized URL and refuses every request that does not carry
 the signed cookie minted by exchanging that token. This bundle removes the
 authentication layer, so `http://127.0.0.1:3080/` just opens.
+
+What it adds on top of that:
+
+- **one switch** for LAN access, with a QR code per detected address;
+- an optional **password** for phones, exchanged for the shipped 30-day cookie;
+- **extra trusted hosts** for ngrok, Cloudflare tunnels, reverse proxies and
+  private DNS names — without which the page loads and then sits on
+  "reconnecting" forever;
+- a **mobile layout** for a shell that ships no narrow-viewport rules of its own,
+  including safe-area handling and an opt-in `#mobile-debug` readout.
 
 ## What it changes
 
@@ -388,15 +398,49 @@ the Harness (see above), and `.gitignore` documents why.
 
 MIT — see [LICENSE](LICENSE).
 
-## Chinses_README
+## Version history
+
+| version | what changed |
+|---|---|
+| **1.2.0** | Everything on one page (`settings.section`) instead of four seats; **extra trusted hosts** for tunnels and reverse proxies; **password sign-in**; a host-injected mobile stylesheet with a browser fallback, a `viewport-fit=cover` rewrite and an opt-in `#mobile-debug` readout; landscape-phone device rules; a revision watcher so an edited UI reaches a phone by itself. |
+| 1.1.0 | The one-click LAN switch, the LAN/loopback control route, per-mode wrappers and the QR encoder. |
+| 1.0.0 | The gate wrappers themselves: three modes over `requestRejection`, `authorizeIndex` and `authenticatedUrl`. |
+
+## Notes for maintainers
+
+Three rules this plugin learned the hard way. Each one has a suite that fails if
+it is broken again.
+
+1. **A config write must keep the rest of the row it edits.**
+   `configEditor.edit(entry, (current, inherited) => …)` hands over the row's
+   *existing override* first and the inherited layer second. Deriving the new
+   config from `inherited` alone silently discards every other value saved on that
+   row: saving the trusted hosts once reset the access mode, which reads as the
+   page switching itself back to "this machine only".
+2. **A browser-half change needs a page reload; a host-half change needs a restart.**
+   The client module roster is rebuilt per request and its revision is a content
+   hash, so edited `client.js` bytes arrive on a reload — but `index.js` is loaded
+   once per process, so a Host feature is simply absent until `dsh web` restarts.
+   That asymmetry is why the UI reports a Host half that predates a field as
+   "restart dsh web" rather than forwarding its `400`.
+3. **The stylesheet exists twice, byte-identical.** The Host injects it into the
+   document head (first paint, cache-proof, reaches a phone even through a cached
+   document) and the browser half carries the same text so a phone updates without
+   a Host restart. The browser copy stands down when the Host's is present,
+   detected through the `dsh-no-token/mobile` sentinel, and `verify-mobile.mjs`
+   fails if the two copies ever differ by a byte.
+
+## 中文说明
 
 ---
 
 ## 一、核心目标
 
-**在不关闭 Host/Origin 信任围栏的前提下，去掉 `?token=` 强制门禁**，并且所有配置都可以从 **Settings → Plugins** 完成，而不是手改 YAML。
+**在不关闭 Host/Origin 信任围栏的前提下，去掉 `?token=` 强制门禁**，并且所有配置都可以从 **设置 → 局域网访问** 完成，而不是手改 YAML。
 
 `dsh web` 原本会打印一个带 token 的 URL，任何没有携带签名 cookie 的请求都会被拒绝。这个 bundle 把认证层移除，让 `http://127.0.0.1:3080/` 直接打开。
+
+在此之上它另外提供：**一键局域网开关（每个地址配二维码）**、**可选的访问密码**（换成官方的 30 天 cookie）、**额外可信主机**（ngrok / Cloudflare 隧道 / 反向代理 / 自定义域名 —— 没有这一项，页面能打开但会一直「重新连接中」）、以及**移动端布局**（外壳本身没有任何窄屏规则）。
 
 ---
 
@@ -428,17 +472,23 @@ MIT — see [LICENSE](LICENSE).
 
 ## 四、从 Web UI 配置
 
-模式页面注册进三个 seat：
+全部集中在**一个页面：设置 → 局域网访问**（`settings.section`，id `no-token-lan`）：访问模式、额外可信主机、局域网开关、访问密码、地址列表与二维码。
 
-| 位置 | seat | 作用 |
-|---|---|---|
-| Settings → Built-in plugins → "No-token access" 标签页 | `settings.plugins.tab` | 设置面板中的表单标签页 |
-| Sidebar Plugins 页 → `dsh-no-token` → row `no-token` → configure | `plugins.row.config`，key `dsh-no-token#no-token` | 行级配置控件 |
-| Sidebar Plugins 页 → `dsh-no-token` 卡片 | `plugins.bundle.config`，key `dsh-no-token` | bundle 自身页面上的表单 |
+早期版本还把模式表单同时渲染进 `settings.plugins.tab`、`plugins.row.config`、`plugins.bundle.config` 三个 seat。这在实际使用中是错的：同一个开关出现在四个地方，在一处改完去另一处看，就会以为"设置没生效"。这三个 seat 已全部移除；该行的 controller 仍然解析（模式区块要驱动它），客户端现在只占两个座位 —— 这个设置页，以及样式与读数用的 `shell.overlay`。
 
 值来自 `@deepseek-ai/dsh-client-ui-settings` 的共享 `configForms` service，继承 revision fencing、写恢复和 live Host 更新；保存写入活动 profile 的 Cordis patch（`~/.dsh/profiles/web/cordis.patch.yml`）并立即生效。
 
 编辑 `client.js` 无需重启：模块表重组，served revision 变化，刷新页面即可拿到新字节。
+
+### 隧道 / 反向代理 与「一直重新连接中」
+
+信任围栏只接受 `Host` 为回环或本部署所服务 authority 的请求，而**派生出来的 authority 一律是 IP 字面量**（这是刻意的：DNS 重绑定需要攻击者可控的域名，而 IP 字面量的 Host 在任何端口都安全）。
+
+ngrok、Cloudflare 隧道、反向代理、自定义 DNS 名给的是**域名**。用它访问时，围栏会对**每一条 `/api` 请求**回 `403` —— 页面本身照常加载，但 API 桥和事件通道全死，界面就一直停在「重新连接中」。官方对此的答案是命令行 `--trusted-host`，而插件没法往你的启动命令里加参数。
+
+所以**「额外可信主机」**就是本插件版的 `--trusted-host`：每行一个 authority，持久化写进本行的 profile 配置，由门禁补丁生效；匹配规则照抄 `isTrustedAuthority` —— 带端口的条目匹配该精确 authority，不带的匹配任意端口。
+
+列出域名**不会**削弱防重绑定：围栏检查的两个浏览器标记原样重放，跨站请求（`Sec-Fetch-Site: cross-site`）与 `Origin` 和 `Host` 不符的请求**仍然被拒**。
 
 ---
 
