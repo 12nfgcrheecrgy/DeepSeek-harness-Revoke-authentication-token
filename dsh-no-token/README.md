@@ -27,6 +27,7 @@ service makes two decisions this plugin wraps on the service instance:
 |---|---|---|
 | `requestRejection(req)` for `/api`, the WebSocket mux, uploads | `401` without the browser cookie, `403` when the Host/Origin fence refuses | `401` → admitted on the bypassed scope; `403` and "admitted" pass through untouched |
 | `authorizeIndex(req, res)` for `index.html` | `401`, or a `303` cookie exchange when `?token=` is valid | index is served directly on the bypassed scope |
+| `authorizeIndex(req, res)` for `index.html` | `401`, or a `303` cookie exchange when `?token=` is valid | index is served directly on the bypassed scope, and the response is marked `Cache-Control: no-store` |
 | `authenticatedUrl(url)` | appends `?token=…` | token stripped on the bypassed scope, so the printed/opened URL carries no secret |
 
 Nothing else is patched: no shipped row is disabled, no other plugin is
@@ -34,6 +35,14 @@ replaced. **The Host/Origin fence stays on**, so a page that reaches the port
 through DNS rebinding or a cross-site request is still refused with `403` — the
 harness can run shell commands, and that fence is what keeps a random web page
 out.
+
+One addition rides that same wrapper: **every `index.html` response is marked
+`Cache-Control: no-store`**. The shipped static server sets no cache headers at
+all, and each client module is named by a content revision — a document cached
+from an earlier generation points at revisions the server no longer has, every
+module batch then answers `404`, and the app never mounts: a **blank page**. A
+hard reload fixes it once, but Chrome reuses a stale document where Firefox
+revalidates, so the header is what stops it happening at all.
 
 ## Modes
 

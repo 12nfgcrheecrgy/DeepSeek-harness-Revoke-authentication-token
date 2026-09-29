@@ -319,6 +319,18 @@ function patchConnection(connection, state, config) {
   }
 
   const authorizeIndex = function authorizeIndex(request, response) {
+    // The document names its client modules by content revision, and a chunk URL
+    // whose revision is gone answers 404 — so a browser that reuses a cached
+    // document cannot boot the app at all: it renders a blank page. The shipped
+    // static server sets no cache headers, which leaves that decision to each
+    // browser's heuristic, and Chrome reuses a stale document where Firefox
+    // revalidates. This wrapper is the one place that sees every index response, so
+    // the header is set here — for the bypassed path and the shipped one alike.
+    try {
+      if (typeof response.setHeader === 'function') response.setHeader('cache-control', 'no-store')
+    } catch {
+      /* a response that cannot take a header is not worth failing the request over */
+    }
     if (bypasses(connection[PATCH].state.mode, requestHostname(request))) return true
     if (typeof originalAuthorizeIndex !== 'function') return true
     const hostname = requestHostname(request)

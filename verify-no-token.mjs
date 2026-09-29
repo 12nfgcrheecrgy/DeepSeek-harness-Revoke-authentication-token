@@ -354,9 +354,15 @@ assert.equal(new (await import('@deepseek-ai/schemastery')).default(Config.toJSO
     const state = { status: undefined, headers: undefined, body: undefined }
     return {
       state,
+      // Headers set before writeHead survive it in node:http, so the double keeps
+      // them separately from the ones writeHead receives.
+      headers: {},
+      setHeader(name, value) {
+        this.headers[String(name).toLowerCase()] = value
+      },
       writeHead(status, headers) {
         state.status = status
-        state.headers = headers
+        state.headers = { ...this.headers, ...headers }
         return this
       },
       end(body) {
@@ -375,6 +381,19 @@ assert.equal(new (await import('@deepseek-ai/schemastery')).default(Config.toJSO
     connection.authorizeIndex({ headers: { host: '127.0.0.1:3080' }, url: '/' }, response)
     assert.equal(response.state.status, 401)
     assert.equal(response.state.body, SHIPPED, 'loopback keeps the shipped refusal')
+    assert.equal(response.state.headers['cache-control'], 'no-store', 'the document is never cached')
+  }
+
+  // A browser that reuses a cached document cannot boot at all: the module URLs it
+  // carries name revisions the server no longer has (404). Every index response is
+  // marked no-store, on the bypassed path too.
+  {
+    const connection = makeIndexConnection()
+    mount(connection, undefined)
+    const response = capture()
+    assert.equal(connection.authorizeIndex({ headers: { host: '127.0.0.1:3080' }, url: '/' }, response), true, 'loopback is served directly')
+    assert.equal(response.state.headers, undefined, 'the shipped server writes its own headers')
+    assert.equal(response.headers['cache-control'], 'no-store', 'and ours is already on the response')
   }
 
   // A visitor from the network is sent to the sign-in route, which offers the
