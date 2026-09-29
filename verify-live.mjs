@@ -7,7 +7,7 @@
 import http from 'node:http'
 
 const HOST = '127.0.0.1'
-const PORT = 3080
+const PORT = Number(process.env.DSH_WEB_PORT ?? 3080)
 
 function probe(name, path, headers = {}) {
   return new Promise((resolve) => {
@@ -32,7 +32,15 @@ const index = await probe('index', '/')
 check('GET / without a token serves the app', index.status, index.status === 200, index.body)
 
 const reboundIndex = await probe('index-rebound', '/', { host: 'evil.example' })
-check('GET / from a foreign Host keeps the gate', reboundIndex.status, reboundIndex.status === 401)
+// The gate refuses a foreign Host, and this plugin turns that refusal into a
+// redirect to its own sign-in route — the shipped text points at a terminal line the
+// process prints at most once, which a visitor arriving after a rebind cannot use.
+check(
+  'GET / from a foreign Host is sent to the sign-in route instead of a dead-end 401',
+  reboundIndex.status,
+  reboundIndex.status === 302 && reboundIndex.location === '/no-token/login',
+  `location: ${reboundIndex.location ?? '(none)'}`,
+)
 
 const api = await probe('api', '/api')
 check('GET /api without a cookie is not 401', api.status, api.status !== 401 && api.status !== 0, api.body)

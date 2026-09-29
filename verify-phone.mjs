@@ -12,7 +12,7 @@
  */
 import http from 'node:http'
 
-const BASE = 'http://127.0.0.1:3080'
+const BASE = `http://127.0.0.1:${String(process.env.DSH_WEB_PORT ?? 3080)}`
 const ROUTE = '/api/no-token/lan'
 
 /** The refusal the shipped index gate writes, for comparison. */

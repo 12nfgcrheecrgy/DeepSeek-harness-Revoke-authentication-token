@@ -66,9 +66,12 @@ async function mountSection(loginUrl, options = {}) {
   let section
   const ctx = {
     locale: { bind: () => (key) => key, register: () => () => {} },
-    configForms: {
-      get: () => ({ getSnapshot: () => ({ status: 'unavailable' }), subscribe: () => () => {}, dispose() {} }),
-      whileServed: () => () => {},
+    // The client Cordis seam. This mock deliberately has no `configForms`, which is
+    // the desktop case: the service is optional, and the page must come up without it.
+    inject: (services, callback) => {
+      if (services.includes('configForms')) return () => {}
+      callback({ effect: (execute) => execute() })
+      return () => {}
     },
     slots: {
       inject: (slot, callback) => {

@@ -381,8 +381,19 @@ dsh-no-token/          the installable bundle
   client.js            browser half: mode page, LAN page, mobile fallback, readout
   cordis.patch.yml     the one row the bundle contributes
   locale/{en,zh}.json  the card metadata
+tools/
+  build-mobile-css.mjs regenerates the mobile stylesheet from the running shell
 verify-*.mjs           the suites, run from this directory
 LICENSE                MIT
+```
+
+The live suites read the port from `DSH_WEB_PORT` (default `3080`), so they can be
+pointed at any instance — the Desktop app, for instance, serves on its own port:
+
+```powershell
+$env:DSH_WEB_PORT = '19387'
+node verify-boot.mjs      # roster, head rows, viewport rewrite
+node verify-mobile.mjs    # stylesheet plus the live drift check against the shell
 ```
 
 `node_modules/` is not committed: it holds copies of two packages that ship with
@@ -411,14 +422,18 @@ MIT — see [LICENSE](LICENSE).
 
 | version | what changed |
 |---|---|
-| **1.2.0** | Everything on one page (`settings.section`) instead of four seats; **extra trusted hosts** for tunnels and reverse proxies; **password sign-in**; a host-injected mobile stylesheet with a browser fallback, a `viewport-fit=cover` rewrite and an opt-in `#mobile-debug` readout; landscape-phone device rules; a revision watcher so an edited UI reaches a phone by itself. |
+| **1.3.0** | Verified on **0.2.0-rc.2** (live: gate 6/6, roster 19/19). The mobile layer was regenerated against the running shell, because 0.2.0 renamed every CSS-module class from `_<name>_<hash>_<line>` to `<hash>_<name>`: selectors written for the old scheme matched nothing, so the conversation gutters, composer safe-area, greeting size, tap targets and overlay rules went inert while every offline suite stayed green. `tools/build-mobile-css.mjs` now generates the stylesheet from the live class names, matching both schemes, and `verify-mobile.mjs` fails if a name disappears from the shell. `configForms` is no longer a hard dependency — it comes from the plugin manager, and a hard inject keeps the whole page inactive wherever that package is absent. |
+| 1.2.0 | Everything on one page (`settings.section`) instead of four seats; **extra trusted hosts** for tunnels and reverse proxies; **password sign-in**; a host-injected mobile stylesheet with a browser fallback, a `viewport-fit=cover` rewrite and an opt-in `#mobile-debug` readout; landscape-phone device rules; a revision watcher so an edited UI reaches a phone by itself. |
 | 1.1.0 | The one-click LAN switch, the LAN/loopback control route, per-mode wrappers and the QR encoder. |
 | 1.0.0 | The gate wrappers themselves: three modes over `requestRejection`, `authorizeIndex` and `authenticatedUrl`. |
 
+**Supported**: 0.1.7-rc.2 through 0.2.0-rc.2, on the `web` platform — and the Desktop
+app, whose profile serves the same browser surface.
+
 ## Notes for maintainers
 
-Three rules this plugin learned the hard way. Each one has a suite that fails if
-it is broken again.
+Four rules this plugin learned the hard way. Each one has a suite that fails if it
+is broken again.
 
 1. **A config write must keep the rest of the row it edits.**
    `configEditor.edit(entry, (current, inherited) => …)` hands over the row's
@@ -438,6 +453,15 @@ it is broken again.
    a Host restart. The browser copy stands down when the Host's is present,
    detected through the `dsh-no-token/mobile` sentinel, and `verify-mobile.mjs`
    fails if the two copies ever differ by a byte.
+4. **A selector that names the shell's classes is a dependency on a build detail, so
+   it is generated rather than written.** 0.1.7 named CSS-module classes
+   `_<name>_<hash>_<line>`; 0.2.0 names them `<hash>_<name>`. Every selector
+   therefore matches all three boundaries — `[class$="_name"]`,
+   `[class*="_name "]`, `[class*="_name_"]` — and `tools/build-mobile-css.mjs`
+   derives the name list from the served bundles, drops anything the running shell no
+   longer has, and writes both copies. After a shell upgrade: run it against the
+   running server, then `DSH_WEB_PORT=<port> node verify-mobile.mjs`, whose live
+   drift check fails the moment a name disappears.
 
 ## 中文说明
 

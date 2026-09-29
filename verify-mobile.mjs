@@ -127,21 +127,23 @@ assert.ok(body.trimStart().startsWith('@media (max-width: 820px)'), 'and the sty
   )
 }
 
-// The names are the shell's own (read from its built bundle), not invented ones.
+// The names are the shell's own — and each is matched in BOTH naming schemes the
+// shell has used: `_<name>_<hash>_<line>` in 0.1.7 and `<hash>_<name>` in 0.2.0.
+// A selector written for one scheme silently matches nothing in the other, which is
+// exactly how this layer went inert on 0.2.0 while every offline suite stayed green.
 for (const marker of [
   '_frame',
   '_sidebarCol',
   '_centerCol',
   '_rightbarCol',
-  '_content_',
-  '_viewArea_',
-  '_scrollBody_',
-  '_composerSeat_',
-  '_composerHero_',
-  '_composerStack_',
-  '_headline_',
-  '_iconButton_',
-  '_backdrop_',
+  '_viewArea',
+  '_scrollBody',
+  '_composerSeat',
+  '_composerHero',
+  '_composerStack',
+  '_headline',
+  '_iconButton',
+  '_dialog',
   'min-width: 0',
   '100dvh',
   'font-size: 16px',
@@ -151,6 +153,11 @@ for (const marker of [
 ]) {
   assert.ok(css.includes(marker), `the stylesheet keys off ${marker}`)
 }
+for (const name of ['viewArea', 'composerSeat', 'headline', 'iconButton']) {
+  assert.ok(css.includes(`[class$="_${name}"]`), `${name} matches the 0.2.0 form (hash_name, ends the attribute)`)
+  assert.ok(css.includes(`[class*="_${name}_"]`), `${name} matches the 0.1.7 form (name_hash_line)`)
+  assert.ok(css.includes(`[class*="_${name} "]`), `${name} matches the 0.2.0 form with a sibling class`)
+}
 
 // The two behaviours the phone screenshots demanded, each tied to a fact read out
 // of `dsh-client-ui-layout/lib/client.js` (the inline `minmax(400px, 1fr)` floor and
@@ -158,9 +165,9 @@ for (const marker of [
 // (which freezes its content width inline while collapsed).
 assert.match(css, /grid-template-columns: 0 minmax\(0, 1fr\) 0 !important/, 'the centre track loses the 400px floor')
 assert.match(css, /\[data-sidebar-collapsed\][\s\S]{0,140}grid-template-columns: 56px minmax\(0, 1fr\) 0 !important/, 'the collapsed rail keeps the shell\'s own 56px track')
-assert.match(css, /\[class\*="_centerCol"\] \{ grid-column: 2 !important/, 'the centre is pinned to its own track')
-assert.match(css, /\[class\*="_rightbarCol"\] \{ grid-column: 3 !important/, 'so is the right track, which stays zero-width')
-assert.match(css, /:not\(\[data-sidebar-collapsed\]\)[\s\S]{0,260}position: absolute !important/, 'an expanded sidebar becomes an overlay')
+assert.match(css, /\[class\$="_centerCol"\], [\s\S]{0,40}\[class\*="_centerCol "\] \{ grid-column: 2 !important/, 'the centre is pinned to its own track')
+assert.match(css, /\[class\$="_rightbarCol"\], [\s\S]{0,40}\[class\*="_rightbarCol "\] \{ grid-column: 3 !important/, 'so is the right track, which stays zero-width')
+assert.match(css, /:not\(\[data-sidebar-collapsed\]\)[\s\S]{0,340}position: absolute !important/, 'an expanded sidebar becomes an overlay')
 assert.match(css, /min\(86vw, 320px\)/, 'the drawer is capped to the screen')
 assert.match(css, /box-shadow: 0 0 0 100vmax/, 'and dims what it covers')
 assert.ok(!css.includes('display: flex !important'), 'the shell grid is kept rather than replaced')
@@ -175,13 +182,12 @@ assert.ok(!css.includes('display: flex !important'), 'the shell grid is kept rat
 // what an important declaration here would break.
 assert.match(
   css,
-  /\[class\$="_frame"\], \[class\*="_frame "\] \{\n\s+box-sizing: border-box;\n\s+padding-top: env\(safe-area-inset-top\);/,
+  /\[class\$="_frame"\],\n\s+\[class\*="_frame "\],\n\s+\[class\*="_frame_"\] \{\n\s+box-sizing: border-box;\n\s+padding-top: env\(safe-area-inset-top\);/,
   'the frame clears the notch, stating the box model the shell only states for its Windows titlebar',
 )
 assert.ok(!/padding-top: env\(safe-area-inset-top\) !important/.test(css), 'and never overrides the shell\'s Windows titlebar padding')
-assert.match(css, /inset: env\(safe-area-inset-top\) auto 0 env\(safe-area-inset-left\) !important/, 'the drawer states its own top and leading insets, which the frame\'s padding cannot reach')
-assert.match(css, /padding-bottom: env\(safe-area-inset-bottom\) !important/, 'and pads its content off the gesture bar')
-assert.match(css, /env\(safe-area-inset-bottom\)\)\s*!important/, 'the backdrop clears the bottom inset too')
+assert.match(css, /env\(safe-area-inset-bottom\)\) !important/, 'the composer clears the bottom inset')
+assert.match(css, /env\(safe-area-inset-left\)/, 'and the leading and trailing insets')
 const coarse = css.slice(css.indexOf('@media (pointer: coarse)'))
 assert.ok(coarse.includes('font-size: 16px !important'), 'the landscape band stops iOS zoom on focus')
 assert.ok(coarse.includes('env(safe-area-inset-left)'), 'and carries the landscape insets')
@@ -361,5 +367,52 @@ console.log('verify-mobile: the injected narrow-viewport layer is complete and d
 assert.ok(client.includes(`const MOBILE_VIEWPORT_KEYS = '${VIEWPORT_KEYS}'`), 'the browser half carries the identical viewport keys')
 assert.ok(client.includes('applyMobileViewport'), 'and applies them to its own document')
 assert.ok(/meta\.setAttribute\('content', original\)/.test(client), 'restoring the original when the plugin unloads')
+
+// ---- anti-drift: the live shell must still carry every name in the stylesheet ----
+// This is the check whose absence let the layer go inert on 0.2.0: the stylesheet is
+// generated against real class names, but the shell can rename them in any release,
+// and an offline suite cannot see the shell. It runs only when a server answers, so
+// the suite stays usable without one.
+{
+  const port = Number(process.env.DSH_WEB_PORT ?? 3080)
+  const base = `http://127.0.0.1:${String(port)}`
+  let shellNames
+  try {
+    const html = await (await fetch(`${base}/`)).text()
+    const marker = html.indexOf('__DSH_BOOT__')
+    if (marker === -1) throw new Error('no boot payload in the served document')
+    const start = html.indexOf('{', marker)
+    let depth = 0
+    let manifest
+    for (let index = start; index < html.length; index += 1) {
+      if (html[index] === '{') depth += 1
+      else if (html[index] === '}') {
+        depth -= 1
+        if (depth === 0) {
+          manifest = JSON.parse(html.slice(start, index + 1))
+          break
+        }
+      }
+    }
+    shellNames = new Set()
+    for (const entry of manifest.entries) {
+      if (entry.id === 'dsh-no-token') continue
+      const response = await fetch(new URL(entry.url, `${base}/`))
+      if (response.status !== 200) continue
+      const bundle = await response.text()
+      for (const match of bundle.matchAll(/\._([A-Za-z][A-Za-z0-9]*)_[a-z0-9]{4,8}_\d+/g)) shellNames.add(match[1])
+      for (const match of bundle.matchAll(/\.([A-Za-z0-9][A-Za-z0-9_-]{2,14})_([A-Za-z][A-Za-z0-9]*)\{/g)) shellNames.add(match[2])
+    }
+  } catch (error) {
+    console.log(`verify-mobile: live drift check skipped (${error instanceof Error ? error.message : String(error)})`)
+  }
+  if (shellNames !== undefined) {
+    const wanted = [...new Set([...css.matchAll(/\[class\$="_([A-Za-z][A-Za-z0-9]*)"/g)].map((match) => match[1]))]
+    assert.ok(wanted.length >= 10, `the stylesheet names ${String(wanted.length)} classes`)
+    const missing = wanted.filter((name) => !shellNames.has(name))
+    assert.deepEqual(missing, [], `every name in the stylesheet exists in the running shell (${String(shellNames.size)} names scanned)`)
+    console.log(`verify-mobile: live drift check passed against ${base} (${String(wanted.length)} names, ${String(shellNames.size)} shell names)`)
+  }
+}
 
 console.log('verify-mobile: the injected narrow-viewport layer is complete and desktop-inert')

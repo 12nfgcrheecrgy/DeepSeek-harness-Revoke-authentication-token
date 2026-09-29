@@ -32,7 +32,10 @@ const client = spec.factory((id) => {
   if (id === 'react') return React
   throw new Error(`unexpected require(${id})`)
 })
-assert.deepEqual(client.inject, ['slots', 'locale', 'configForms'])
+// Only the locale package is a hard module dependency: `configForms` comes from the
+// plugin manager, and a profile need not load it. A hard inject there keeps the whole
+// page inactive without a word, so the service is resolved at runtime instead.
+assert.deepEqual(client.inject, ['slots', 'locale'])
 assert.equal(typeof client.apply, 'function')
 
 // ---- Client service stubs -----------------------------------------------------
@@ -70,6 +73,13 @@ function mount(controller, served = ['no-token']) {
   const registered = []
   const requested = []
   const ctx = {
+    // The client Cordis seam. `configForms` is optional, so the plugin asks for it
+    // here rather than declaring it as a hard dependency.
+    inject: (services, callback) => {
+      if (!services.includes('configForms')) return () => {}
+      callback({ configForms: ctx.configForms, effect: (execute) => execute() })
+      return () => {}
+    },
     locale: {
       bind: (ns) => (key) => dictionaries[ns]?.zh?.[key] ?? key,
       register: (ns, dictionary) => {

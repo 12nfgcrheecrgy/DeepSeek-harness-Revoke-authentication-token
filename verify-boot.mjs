@@ -13,7 +13,7 @@
  *
  * Run: node verify-boot.mjs
  */
-const base = 'http://127.0.0.1:3080'
+const base = `http://127.0.0.1:${String(process.env.DSH_WEB_PORT ?? 3080)}`
 const results = []
 
 function check(name, ok, detail = '') {
@@ -101,19 +101,25 @@ const safeArea = html.includes('safe-area-inset-top') && html.includes('env(safe
 check('the served stylesheet carries the safe-area rules', safeArea, safeArea ? 'the frame, the drawer and the composer all pad off the insets' : 'restart `dsh web`')
 
 if (entry !== undefined) {
-  for (const dependency of ['@deepseek-ai/dsh-client-locale', '@deepseek-ai/dsh-client-ui-settings', '@deepseek-ai/dsh-client-ui-plugin-manager']) {
-    check(`dsh.client.inject lists ${dependency}`, (entry.inject ?? []).includes(dependency))
+  // Only the locale package is a hard module dependency. `configForms` comes from the
+  // plugin manager, and a profile need not load it: a hard dependency there would
+  // keep the whole page — and the stylesheet — inactive without a word, so it is
+  // resolved at runtime instead and asserted absent from this list.
+  check('dsh.client.inject lists @deepseek-ai/dsh-client-locale', (entry.inject ?? []).includes('@deepseek-ai/dsh-client-locale'))
+  for (const optional of ['@deepseek-ai/dsh-client-ui-settings', '@deepseek-ai/dsh-client-ui-plugin-manager']) {
+    check(`dsh.client.inject leaves ${optional} optional`, !(entry.inject ?? []).includes(optional))
   }
   const url = new URL(entry.url, `${base}/`)
   const response = await fetch(url)
   const body = await response.text()
   check('the advertised URL serves the browser half', response.status === 200, `${url.pathname}${url.search} -> ${response.status}, ${body.length} bytes`)
   check('the factory declares the package name', body.includes('id: "dsh-no-token"') || body.includes("id: 'dsh-no-token'"))
-  check('the page registers into plugins.row.config', body.includes('plugins.row.config'))
-  check('the page also claims the Settings tab seat', body.includes('settings.plugins.tab'))
-  check('the page also claims the bundle-config seat', body.includes('plugins.bundle.config'))
-  check('the page also claims the independent LAN section', body.includes('settings.section'))
-  check('the page uses the shared configForms service', body.includes('configForms'))
+  check('the page claims the independent LAN section', body.includes('settings.section') && body.includes('no-token-lan'))
+  for (const dropped of ['plugins.row.config', 'settings.plugins.tab', 'plugins.bundle.config']) {
+    check(`the page registers no second seat (${dropped})`, !body.includes(`name: '${dropped}'`) && !body.includes(`name: "${dropped}"`))
+  }
+  check('the page resolves configForms at runtime', body.includes("ctx.inject(['configForms']"))
+  check('the page takes an optional row controller', body.includes('props.controller'))
 }
 
 const failed = results.filter((ok) => !ok).length

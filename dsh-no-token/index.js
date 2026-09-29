@@ -360,7 +360,10 @@ function patchConnection(connection, state, config) {
           })
           return response.end()
         }
-        response.writeHead(status, headers)
+        // `writeHead` is the only call a wrapped response is guaranteed to expose —
+        // a mount proxy (reverse-proxy subpaths) hands over exactly this shape — so
+        // the no-store header is merged here as well as set on the raw response.
+        response.writeHead(status === undefined ? 200 : status, { 'cache-control': 'no-store', ...headers })
         return response.end(body)
       },
     }
@@ -433,148 +436,158 @@ const MOBILE_CSS = `/* dsh-no-token/mobile */
   input, textarea, select { font-size: 16px !important; }
   button, [role="button"], [role="tab"], [role="menuitem"] { touch-action: manipulation; }
   img, video, canvas { max-width: 100%; height: auto; }
-  [class*="_tableScroll_"] { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   pre, table { max-width: 100%; overflow-x: auto; }
 
   /* ---- the frame ----------------------------------------------------------
-     From dsh-client-ui-layout/lib/client.js:
-
-       computeColumns(viewport, sidebar, rightbar, collapsedWidth = 56) {
-         const s = sidebar === 0 ? collapsedWidth : clampWidth(sidebar, 264, 420);
-         const available = viewport - s - 400;
-         const r = rightbar === 0 || available < 300 ? 0 : Math.min(available, clampWidth(rightbar, 300, viewport * RIGHTBAR_MAX_RATIO));
-         return { sidebar: s, center: Math.max(0, viewport - s - r), rightbar: r };
-       }
-
-     and the frame's columns are set as inline styles:
-
-       gridTemplateColumns: cols.sidebar + "px minmax(" + (cols.rightbar === 0 ? 0 : 400) + "px, 1fr) minmax(0px, " + rightbarMax + "px)"
-
-     So on a phone an *expanded* sidebar is a fixed 264-420px column, and any
-     tracked right pane floors the centre at 400px - either way the conversation is
-     left with a strip. Only the template is overridden here: the shell's own CSS
-     places no grid-column on the three items, so they are pinned to their tracks
-     (necessary, because an absolutely positioned sidebar would otherwise let
-     auto-placement slide the centre into the first track). The right column stays
-     a zero-width track, which is exactly what its occupant expects: per the layout
-     source it draws its panel anchored to the frame's right edge and only uses the
-     track to ask the centre for room — so the pane covers the conversation
-     instead of squeezing it. overlayLayer, leadingSeat and handle are
-     already position:absolute in the shell CSS and stay out of the flow. ----- */
+     The shell lays out a JS-computed grid whose centre column is floored at
+     minmax(400px, 1fr) and whose sidebar, when expanded, is a fixed 264-420px
+     column. On a phone that leaves the conversation a strip, so only the template
+     is overridden and the three items are pinned to their tracks - necessary,
+     because an absolutely positioned sidebar would otherwise let auto-placement
+     slide the centre into the first track. The right column stays a zero-width
+     track, which is what its occupant expects: it draws its panel anchored to the
+     frame's right edge and only uses the track to ask the centre for room. ------- */
   [class$="_frame"], [class*="_frame "] { grid-template-columns: 0 minmax(0, 1fr) 0 !important; }
   [class$="_frame"][data-sidebar-collapsed], [class*="_frame "][data-sidebar-collapsed] {
     grid-template-columns: 56px minmax(0, 1fr) 0 !important;
   }
-  /* macOS desktop hides the rail entirely (collapsedWidth = 0 there). */
   html[data-platform="darwin"] [class$="_frame"][data-sidebar-collapsed],
   html[data-platform="darwin"] [class*="_frame "][data-sidebar-collapsed] {
     grid-template-columns: 0 minmax(0, 1fr) 0 !important;
   }
-  [class*="_sidebarCol"] { grid-column: 1 !important; grid-row: 1 !important; }
-  [class*="_centerCol"] { grid-column: 2 !important; grid-row: 1 !important; min-width: 0 !important; }
-  [class*="_rightbarCol"] { grid-column: 3 !important; grid-row: 1 !important; }
-  /* Expanded on a phone the session list is the official app's drawer: it covers
-     the conversation instead of taking a column out of it. SidebarRoot freezes
-     its content at the last expanded width through an inline style, so the drawer
-     also caps that child. */
-  [class$="_frame"]:not([data-sidebar-collapsed]) [class*="_sidebarCol"],
-  [class*="_frame "]:not([data-sidebar-collapsed]) [class*="_sidebarCol"] {
+  [class$="_sidebarCol"], [class*="_sidebarCol "] { grid-column: 1 !important; grid-row: 1 !important; }
+  [class$="_centerCol"], [class*="_centerCol "] { grid-column: 2 !important; grid-row: 1 !important; min-width: 0 !important; }
+  [class$="_rightbarCol"], [class*="_rightbarCol "] { grid-column: 3 !important; grid-row: 1 !important; }
+  /* Expanded on a phone the session list is a drawer over the conversation. */
+  [class$="_frame"]:not([data-sidebar-collapsed]) [class$="_sidebarCol"],
+  [class*="_frame "]:not([data-sidebar-collapsed]) [class$="_sidebarCol"],
+  [class$="_frame"]:not([data-sidebar-collapsed]) [class*="_sidebarCol "],
+  [class*="_frame "]:not([data-sidebar-collapsed]) [class*="_sidebarCol "] {
     position: absolute !important;
-    /* Absolute children are placed against the frame's padding box, so the frame's
-       own inset padding does not reach them: the drawer states its top and leading
-       insets itself. It keeps bottom: 0 so the scrim below still covers the gesture
-       bar, and pads its content off it instead. */
-    inset: env(safe-area-inset-top) auto 0 env(safe-area-inset-left) !important;
-    padding-bottom: env(safe-area-inset-bottom) !important;
+    inset: 0 auto 0 0 !important;
     z-index: 40 !important;
     width: min(86vw, 320px) !important;
     box-shadow: 0 0 0 100vmax rgb(0 0 0 / 45%) !important;
   }
-  [class$="_frame"]:not([data-sidebar-collapsed]) [class*="_sidebarCol"] > *,
-  [class*="_frame "]:not([data-sidebar-collapsed]) [class*="_sidebarCol"] > * {
-    max-width: 100% !important;
-  }
+  [class$="_frame"]:not([data-sidebar-collapsed]) [class$="_sidebarCol"] > *,
+  [class*="_frame "]:not([data-sidebar-collapsed]) [class$="_sidebarCol"] > * { max-width: 100% !important; }
 
-  /* ---- safe areas ---------------------------------------------------------
-     Only ever non-zero once the served viewport meta carries viewport-fit=cover,
-     which the Host adds through its tapIndex transform (see withMobileViewport).
-     The frame is content-box in the shell - only its Windows-titlebar variant
-     states border-box explicitly - so the box model is stated here, or the
-     padding would push the 100% height over the viewport. padding-top
-     deliberately carries no !important: the shell's own rule
-     [data-windows-titlebar] .frame { padding-top: var(--dsh-windows-titlebar-height) }
-     is more specific and must keep winning on a Windows desktop, where every
-     inset here resolves to 0. The bottom is left alone: the composer already owns
-     it, and padding it twice would lift it off the gesture bar. -------------- */
-  [class$="_frame"], [class*="_frame "] {
-    box-sizing: border-box;
-    padding-top: env(safe-area-inset-top);
-    padding-left: env(safe-area-inset-left);
-    padding-right: env(safe-area-inset-right);
-  }
-
-  /* ---- the conversation --------------------------------------------------- */
-  /* Desktop gutters are about 40px a side; a phone wants the width for text. */
-  [class*="_content_"], [class*="_viewArea_"], [class*="_scrollBody_"], [class*="_body_"] {
+  /* ---- the shell's own controls, by names the running build really uses ---- */
+  [class$="_viewArea"],
+  [class*="_viewArea "],
+  [class*="_viewArea_"],
+  [class$="_scrollBody"],
+  [class*="_scrollBody "],
+  [class*="_scrollBody_"],
+  [class$="_scroll"],
+  [class*="_scroll "],
+  [class*="_scroll_"] {
     min-width: 0 !important;
     padding-left: 12px !important;
     padding-right: 12px !important;
   }
-  /* The greeting is set for a desktop hero; the phone size is about 22px. */
-  [class*="_headline_"] { font-size: 22px !important; line-height: 1.35 !important; }
-  [class*="_hero_"] { padding-left: 12px !important; padding-right: 12px !important; }
-  /* The composer clears the gesture bar instead of sitting under it. */
-  [class*="_composerSeat_"], [class*="_composerHero_"], [class*="_composerStack_"] {
-    padding-left: 8px !important;
-    padding-right: 8px !important;
+  [class$="_headline"],
+  [class*="_headline "],
+  [class*="_headline_"] {
+    font-size: 22px !important;
+    line-height: 1.35 !important;
+  }
+  [class$="_composerSeat"],
+  [class*="_composerSeat "],
+  [class*="_composerSeat_"],
+  [class$="_composerHero"],
+  [class*="_composerHero "],
+  [class*="_composerHero_"],
+  [class$="_composerStack"],
+  [class*="_composerStack "],
+  [class*="_composerStack_"] {
+    padding-left: max(8px, env(safe-area-inset-left)) !important;
+    padding-right: max(8px, env(safe-area-inset-right)) !important;
     padding-bottom: max(8px, env(safe-area-inset-bottom)) !important;
   }
-  [class*="_editor_"] { min-height: 40px; }
-
-  /* ---- touch affordances -------------------------------------------------- */
-  [class*="_iconButton_"], [class*="_actionButton_"] { min-width: 36px !important; min-height: 36px !important; }
-  [class*="_row_"], [class*="_menuItem_"], [class*="_item_"] { min-height: 38px; }
-
-  /* ---- overlays ---------------------------------------------------------- */
-  [class*="_backdrop_"] {
-    padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)) !important;
+  [class$="_editor"],
+  [class*="_editor "],
+  [class*="_editor_"] {
+    min-height: 40px;
   }
-  [role="dialog"] {
+  [class$="_iconButton"],
+  [class*="_iconButton "],
+  [class*="_iconButton_"] {
+    min-width: 36px !important;
+    min-height: 36px !important;
+  }
+  [class$="_row"],
+  [class*="_row "],
+  [class*="_row_"],
+  [class$="_item"],
+  [class*="_item "],
+  [class*="_item_"] {
+    min-height: 38px;
+  }
+  [class$="_dialog"],
+  [class*="_dialog "],
+  [class*="_dialog_"],
+  [class$="_panelBody"],
+  [class*="_panelBody "],
+  [class*="_panelBody_"] {
     max-width: 100% !important;
-    max-height: calc(100dvh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom)) !important;
   }
-  [role="menu"], [role="listbox"], [class*="_menu_"] { max-width: 92vw !important; }
+  [class$="_tablePane"],
+  [class*="_tablePane "],
+  [class*="_tablePane_"],
+  [class$="_summaryScrollRegion"],
+  [class*="_summaryScrollRegion "],
+  [class*="_summaryScrollRegion_"],
+  [class$="_scrollport"],
+  [class*="_scrollport "],
+  [class*="_scrollport_"] {
+    overflow-x: auto;
+  }
+
+  /* ---- markup-keyed rules, which survive any renaming --------------------- */
+  [role="dialog"] { max-width: 100% !important; max-height: calc(100dvh - 16px) !important; }
+  [role="menu"], [role="listbox"] { max-width: 92vw !important; }
 }
 
-/* ---- landscape phones and small tablets ------------------------------------
-   The shell's own narrow mode begins at SIDEBAR_AUTO_COLLAPSE = 1024
-   (dsh-client-ui-layout), so a phone held sideways - about 844-932 CSS px - is
-   already inside it while the block above, keyed to 820px, no longer matches.
-   Only device-level rules belong here: at these widths the shell's own narrow
-   layout (a 56px rail plus its own narrowExpanded drawer) is the right one, and
-   restating the three-column template would also reshape a 900px desktop window.
-   pointer: coarse is the primary pointer, so a mouse-driven window never matches,
-   and every safe-area inset is 0 without viewport-fit=cover anyway. ----------- */
+/* A phone held sideways (about 844-932 CSS px) is already inside the shell's own
+   narrow mode, which starts at SIDEBAR_AUTO_COLLAPSE = 1024 and keys its layout in
+   JavaScript. Only device-level rules belong here. */
 @media (pointer: coarse) and (min-width: 821px) and (max-width: 1023.98px) {
   html { -webkit-text-size-adjust: 100%; }
   body { overscroll-behavior-y: none; }
   *, *::before, *::after { -webkit-tap-highlight-color: transparent; }
-  /* iOS zooms any focused control under 16px, in either orientation. */
   input, textarea, select { font-size: 16px !important; }
   button, [role="button"], [role="tab"], [role="menuitem"] { touch-action: manipulation; }
-  [class$="_frame"], [class*="_frame "] {
+  [class$="_frame"],
+  [class*="_frame "],
+  [class*="_frame_"] {
     box-sizing: border-box;
     padding-top: env(safe-area-inset-top);
     padding-left: env(safe-area-inset-left);
     padding-right: env(safe-area-inset-right);
   }
-  [class*="_iconButton_"], [class*="_actionButton_"] { min-width: 36px !important; min-height: 36px !important; }
-  [class*="_composerSeat_"], [class*="_composerHero_"], [class*="_composerStack_"] {
+  [class$="_composerSeat"],
+  [class*="_composerSeat "],
+  [class*="_composerSeat_"],
+  [class$="_composerHero"],
+  [class*="_composerHero "],
+  [class*="_composerHero_"],
+  [class$="_composerStack"],
+  [class*="_composerStack "],
+  [class*="_composerStack_"] {
     padding-left: max(8px, env(safe-area-inset-left)) !important;
     padding-right: max(8px, env(safe-area-inset-right)) !important;
     padding-bottom: max(8px, env(safe-area-inset-bottom)) !important;
   }
-  [role="dialog"] {
+  [class$="_iconButton"],
+  [class*="_iconButton "],
+  [class*="_iconButton_"] {
+    min-width: 36px !important;
+    min-height: 36px !important;
+  }
+  [class$="_dialog"],
+  [class*="_dialog "],
+  [class*="_dialog_"] {
     max-height: calc(100dvh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom)) !important;
   }
 }
@@ -1327,13 +1340,19 @@ export function apply(ctx, config) {
     }, 'no-token: connection handle')
 
     // The LAN control route rides the same `/api` admission as every other
-    // route, so it opens no bypass of its own.
-    connectionCtx.effect(() => connection.fetch.register({
-      path: LAN_PATH,
-      methods: ['GET', 'POST'],
-      requestBody: 'buffered',
-      fetch: (request) => handleLanRequest(request, deps, () => state.mode, () => readTrustedHosts(config)),
-    }), 'no-token: LAN control route')
+    // route, so it opens no bypass of its own. The disposer became asynchronous in
+    // 0.2.0, so the effect returns one that awaits it.
+    connectionCtx.effect(() => {
+      const remove = connection.fetch.register({
+        path: LAN_PATH,
+        methods: ['GET', 'POST'],
+        requestBody: 'buffered',
+        fetch: (request) => handleLanRequest(request, deps, () => state.mode, () => readTrustedHosts(config)),
+      })
+      return () => {
+        void Promise.resolve(typeof remove === 'function' ? remove() : undefined).catch(() => {})
+      }
+    }, 'no-token: LAN control route')
 
     if (patchConnection(connection, state, config)) {
       connectionCtx.effect(() => () => {
