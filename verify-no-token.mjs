@@ -117,8 +117,11 @@ assert.equal(new (await import('@deepseek-ai/schemastery')).default(Config.toJSO
   assert.equal(connection.authorizeIndex(LAN, {}), false)
   assert.equal(connection.requestRejection({ headers: {} }), 401)
 
-  // Only the bypassed URL loses the token; the LAN URL stays loggable-in.
-  assert.equal(connection.authenticatedUrl('http://127.0.0.1:3080'), 'http://127.0.0.1:3080/')
+  // The token stays on every authority. Stripping it from the loopback URL once
+  // broke the Desktop host's self-authentication: it builds its login URL through
+  // this method and then performs the exchange, so a tokenless URL fails its whole
+  // boot ("Desktop Host authentication failed").
+  assert.equal(connection.authenticatedUrl('http://127.0.0.1:3080'), 'http://127.0.0.1:3080/?token=SECRET')
   assert.equal(connection.authenticatedUrl('http://192.168.1.20:3080'), 'http://192.168.1.20:3080/?token=SECRET')
 
   // The bundle ships its own settings page, so it opts out of a generated one.
@@ -134,7 +137,7 @@ assert.equal(new (await import('@deepseek-ai/schemastery')).default(Config.toJSO
 
   assert.equal(connection.requestRejection(LAN), undefined)
   assert.equal(connection.authorizeIndex(LAN, {}), true)
-  assert.equal(connection.authenticatedUrl('http://192.168.1.20:3080'), 'http://192.168.1.20:3080/')
+  assert.equal(connection.authenticatedUrl('http://192.168.1.20:3080'), 'http://192.168.1.20:3080/?token=SECRET', 'the token survives in every mode')
   // Even here the fence decides: a rebound Host is still refused.
   assert.equal(connection.requestRejection(REBOUND), 403)
 }
@@ -417,6 +420,23 @@ assert.equal(new (await import('@deepseek-ai/schemastery')).default(Config.toJSO
     assert.equal(response.state.status, 303)
     assert.equal(response.state.headers.location, './')
     assert.equal(response.state.body, undefined, 'the redirect body is not substituted')
+  }
+
+  // The Desktop host's handshake, verbatim: a tokenized loopback request must run
+  // the shipped exchange — a 303 with the session cookie — even though a bare
+  // loopback request is served directly. Swallowing this exchange is what aborted
+  // the app's startup ("Desktop Host authentication failed").
+  {
+    const connection = makeIndexConnection()
+    mount(connection, undefined)
+    const exchange = capture()
+    assert.equal(connection.authorizeIndex({ headers: { host: '127.0.0.1:3080' }, url: '/?token=good' }, exchange), false)
+    assert.equal(exchange.state.status, 303, 'the exchange answers with the shipped redirect')
+    assert.ok(/set-cookie/i.test(Object.keys(exchange.state.headers ?? {}).join(' ')), 'and mints the session cookie')
+    // A bare loopback request still opens directly: that is the whole point of the
+    // plugin, and the desktop handshake does not take it away.
+    const bare = capture()
+    assert.equal(connection.authorizeIndex({ headers: { host: '127.0.0.1:3080' }, url: '/' }, bare), true)
   }
 }
 

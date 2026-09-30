@@ -331,7 +331,18 @@ function patchConnection(connection, state, config) {
     } catch {
       /* a response that cannot take a header is not worth failing the request over */
     }
-    if (bypasses(connection[PATCH].state.mode, requestHostname(request))) return true
+    if (bypasses(connection[PATCH].state.mode, requestHostname(request))) {
+      // The Desktop app authenticates itself against this very server with a
+      // tokenized request over loopback; a bypass that swallows the exchange leaves
+      // it without its session cookie and it aborts the whole boot with "Desktop
+      // Host authentication failed". A tokenized request therefore always runs the
+      // shipped exchange — the bypass only serves a bare index directly.
+      const carriesToken = /\btoken=/.test(request.url ?? '')
+      if (carriesToken && typeof originalAuthorizeIndex === 'function') {
+        return originalAuthorizeIndex.call(connection, request, response)
+      }
+      return true
+    }
     if (typeof originalAuthorizeIndex !== 'function') return true
     const hostname = requestHostname(request)
     // Loopback keeps the shipped refusal, which is accurate there. A visitor from
@@ -371,12 +382,15 @@ function patchConnection(connection, state, config) {
   }
 
   const authenticatedUrl = function authenticatedUrl(baseUrl) {
-    const tokenized = typeof originalAuthenticatedUrl === 'function'
+    // The token stays on every authority. Stripping it from the bypassed one broke
+    // the Desktop host's self-authentication: it builds its login URL through this
+    // method and then performs the exchange, so a tokenless URL fails the boot. A
+    // one-time process token in a login link is what the shipped behaviour is, and
+    // a bare loopback visit still opens without one — the gate, not the URL, is the
+    // policy.
+    return typeof originalAuthenticatedUrl === 'function'
       ? originalAuthenticatedUrl.call(connection, baseUrl)
       : baseUrl
-    // Only the bypassed authority loses its token: while `mode: 'loopback'` the
-    // LAN URL keeps one, or no remote operator could ever complete the exchange.
-    return bypasses(connection[PATCH].state.mode, urlHostname(baseUrl)) ? stripToken(tokenized) : tokenized
   }
 
   connection.requestRejection = requestRejection
@@ -1341,26 +1355,37 @@ export function apply(ctx, config) {
 
     // The LAN control route rides the same `/api` admission as every other
     // route, so it opens no bypass of its own. The disposer became asynchronous in
-    // 0.2.0, so the effect returns one that awaits it.
+    // 0.2.0, so the effect returns one that awaits it. A failure here must never
+    // take the connection service down with it — the Desktop app's whole boot rides
+    // on this service — so it is contained and reported.
     connectionCtx.effect(() => {
-      const remove = connection.fetch.register({
-        path: LAN_PATH,
-        methods: ['GET', 'POST'],
-        requestBody: 'buffered',
-        fetch: (request) => handleLanRequest(request, deps, () => state.mode, () => readTrustedHosts(config)),
-      })
-      return () => {
-        void Promise.resolve(typeof remove === 'function' ? remove() : undefined).catch(() => {})
+      try {
+        const remove = connection.fetch.register({
+          path: LAN_PATH,
+          methods: ['GET', 'POST'],
+          requestBody: 'buffered',
+          fetch: (request) => handleLanRequest(request, deps, () => state.mode, () => readTrustedHosts(config)),
+        })
+        return () => {
+          void Promise.resolve(typeof remove === 'function' ? remove() : undefined).catch(() => {})
+        }
+      } catch (error) {
+        say(`could not register the LAN control route: ${error instanceof Error ? error.message : String(error)}`, 'error')
+        return undefined
       }
     }, 'no-token: LAN control route')
 
-    if (patchConnection(connection, state, config)) {
-      connectionCtx.effect(() => () => {
-        connection[PATCH]?.restore?.()
-      }, 'no-token: connection gate patch')
-      say(describeMode(state.mode))
-    } else {
-      say(`connection service was already patched; mode holder refreshed to "${state.mode}"`)
+    try {
+      if (patchConnection(connection, state, config)) {
+        connectionCtx.effect(() => () => {
+          connection[PATCH]?.restore?.()
+        }, 'no-token: connection gate patch')
+        say(describeMode(state.mode))
+      } else {
+        say(`connection service was already patched; mode holder refreshed to "${state.mode}"`)
+      }
+    } catch (error) {
+      say(`could not patch the connection service, the token gate stays as shipped: ${error instanceof Error ? error.message : String(error)}`, 'error')
     }
   })
 }

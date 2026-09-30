@@ -422,6 +422,7 @@ MIT — see [LICENSE](LICENSE).
 
 | version | what changed |
 |---|---|
+| **1.3.1** | Fixes a crash on the Desktop app: its host authenticates itself with a tokenized loopback request, and the loopback bypass swallowed that exchange — "Desktop Host authentication failed" and the window never opened. A tokenized request now always runs the shipped exchange; `authenticatedUrl` keeps the token on every authority; a patch failure is contained so it cannot take the connection service down. |
 | **1.3.0** | Verified on **0.2.0-rc.2** (live: gate 6/6, roster 19/19). The mobile layer was regenerated against the running shell, because 0.2.0 renamed every CSS-module class from `_<name>_<hash>_<line>` to `<hash>_<name>`: selectors written for the old scheme matched nothing, so the conversation gutters, composer safe-area, greeting size, tap targets and overlay rules went inert while every offline suite stayed green. `tools/build-mobile-css.mjs` now generates the stylesheet from the live class names, matching both schemes, and `verify-mobile.mjs` fails if a name disappears from the shell. `configForms` is no longer a hard dependency — it comes from the plugin manager, and a hard inject keeps the whole page inactive wherever that package is absent. |
 | 1.2.0 | Everything on one page (`settings.section`) instead of four seats; **extra trusted hosts** for tunnels and reverse proxies; **password sign-in**; a host-injected mobile stylesheet with a browser fallback, a `viewport-fit=cover` rewrite and an opt-in `#mobile-debug` readout; landscape-phone device rules; a revision watcher so an edited UI reaches a phone by itself. |
 | 1.1.0 | The one-click LAN switch, the LAN/loopback control route, per-mode wrappers and the QR encoder. |
@@ -432,7 +433,7 @@ app, whose profile serves the same browser surface.
 
 ## Notes for maintainers
 
-Four rules this plugin learned the hard way. Each one has a suite that fails if it
+Five rules this plugin learned the hard way. Each one has a suite that fails if it
 is broken again.
 
 1. **A config write must keep the rest of the row it edits.**
@@ -462,6 +463,13 @@ is broken again.
    longer has, and writes both copies. After a shell upgrade: run it against the
    running server, then `DSH_WEB_PORT=<port> node verify-mobile.mjs`, whose live
    drift check fails the moment a name disappears.
+5. **The Desktop host authenticates itself with a tokenized loopback request.** The
+   bypass must therefore serve only a *bare* index directly; a request carrying
+   `token=` runs the shipped exchange, and `authenticatedUrl` keeps the token on
+   every authority. Swallowing either once aborted the whole app with
+   "Desktop Host authentication failed". `verify-no-token.mjs` replays that
+   handshake (a tokenized loopback request → `303` + cookie) and a patch failure is
+   contained so it can never take the connection service down with it.
 
 ## 中文说明
 
